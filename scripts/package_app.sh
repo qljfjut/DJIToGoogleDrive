@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ====================================
 # 📁 脚本职责：DJIToDrive 官方发布打包与桌面应用生成脚本
-# 包含：SPM release 编译、多分辨率 Retina 图标转换与 .app 结构封装
-# 依赖：swift, sips, iconutil
+# 包含：SPM release 编译、多分辨率 Retina 图标转换、.app 结构封装与原生代码重签名
+# 依赖：swift, sips, iconutil, codesign, xattr
 # ====================================
 
 set -e
@@ -24,7 +24,6 @@ if [ -f "$PROJECT_ROOT/.build/release/DJIToDriveApp" ]; then
 elif [ -f "$PROJECT_ROOT/.build/arm64-apple-macosx/release/DJIToDriveApp" ]; then
     BIN_PATH="$PROJECT_ROOT/.build/arm64-apple-macosx/release/DJIToDriveApp"
 else
-    # 动态查找
     BIN_PATH=$(find "$PROJECT_ROOT/.build" -name "DJIToDriveApp" -type f -perm +111 | head -n 1)
 fi
 
@@ -40,7 +39,6 @@ BASE_PNG="$PROJECT_ROOT/.build/base_icon.png"
 rm -rf "$ICONSET_DIR"
 mkdir -p "$ICONSET_DIR"
 
-# 先将原始图片无损转为合规的标准 PNG
 sips -s format png "$ICON_SRC" --out "$BASE_PNG" >/dev/null 2>&1
 
 sips -z 16 16     "$BASE_PNG" --out "$ICONSET_DIR/icon_16x16.png" >/dev/null 2>&1
@@ -71,9 +69,15 @@ cp "$PROJECT_ROOT/Resources/Info.plist" "$BUNDLE_DIR/Contents/Info.plist"
 cp "$PROJECT_ROOT/Resources/AppIcon.icns" "$BUNDLE_DIR/Contents/Resources/AppIcon.icns"
 echo "APPL????" > "$BUNDLE_DIR/Contents/PkgInfo"
 
-echo "🚀 步骤 4/4: 发布至桌面并刷新图标缓存..."
+echo "🛡️ 步骤 3.5: 清除隔离属性并执行 macOS 原生 Ad-hoc 代码重签名..."
+xattr -cr "$BUNDLE_DIR"
+codesign --force --deep --sign - "$BUNDLE_DIR"
+
+echo "🚀 步骤 4/4: 发布至桌面并同步签名与刷新缓存..."
 rm -rf "$DESKTOP_DIR/$APP_NAME.app"
 cp -R "$BUNDLE_DIR" "$DESKTOP_DIR/$APP_NAME.app"
+xattr -cr "$DESKTOP_DIR/$APP_NAME.app"
+codesign --force --deep --sign - "$DESKTOP_DIR/$APP_NAME.app"
 touch "$DESKTOP_DIR/$APP_NAME.app"
 
-echo "🎉 打包完成！您可以在桌面上直接看到并双击打开【$APP_NAME.app】！"
+echo "🎉 打包完成！您可以在桌面上直接双击打开【$APP_NAME.app】，启动后将自动弹出控制台！"

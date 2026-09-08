@@ -1,20 +1,26 @@
 // ====================================
-// 📁 文件职责：菜单栏常驻快捷控制台 SwiftUI 视图
-// 包含：设备连接指示卡片、待处理媒体摘要、快速同步触发器、设置面板跳转与退出操作
-// 不包含：底层的卷盘物理监听与 Google Drive 网络传输
-// 依赖：SwiftUI, AppKit
+// 📁 文件职责：菜单栏快捷控制面板 SwiftUI 视图与设备感知状态绑定
+// 包含：硬件热插拔实时响应、媒体资产扫描与过滤汇总、手动扫描重试
+// 不包含：底层 Google Drive HTTP 协议与 Keychain 读写
+// 依赖：SwiftUI, AppKit, DeviceDetector, MediaScanner
 // ====================================
 
 import SwiftUI
+import DeviceDetector
+import MediaScanner
 
 struct MenuBarView: View {
-    @State private var isConnected: Bool = false
-    @State private var deviceName: String = "未检测到 DJI 设备"
-    @State private var deviceDetail: String = "请插入 Pocket 3 / 4、360 全景相机或插卡"
-    @State private var pendingFileCount: Int = 0
-    @State private var totalSizeBytes: Int64 = 0
+    @StateObject private var detector = DeviceDetector()
+    private let scanner = MediaScanner()
+    
+    @State private var scanResult: ScanResult = .empty
+    @State private var isScanning: Bool = false
     @State private var isSyncing: Bool = false
     @State private var syncProgress: Double = 0.0
+
+    private var hasActiveDevice: Bool {
+        detector.activeDevice != nil
+    }
 
     var body: some View {
         VStack(spacing: 14) {
@@ -29,7 +35,10 @@ struct MenuBarView: View {
             footerSection
         }
         .padding(14)
-        .frame(width: 350, height: 400)
+        .frame(width: 360, height: 420)
+        .task(id: detector.activeDevice?.id) {
+            await triggerMediaScan()
+        }
     }
 
     // MARK: - 子视图拆分 (Subviews)
@@ -49,9 +58,9 @@ struct MenuBarView: View {
             }
             Spacer()
             Circle()
-                .fill(isConnected ? Color.green : Color.orange)
+                .fill(hasActiveDevice ? Color.green : Color.orange)
                 .frame(width: 8, height: 8)
-            Text(isConnected ? "已就绪" : "待机中")
+            Text(hasActiveDevice ? "设备就绪" : "等待连接")
                 .font(.caption2)
                 .foregroundColor(.secondary)
         }
@@ -60,20 +69,24 @@ struct MenuBarView: View {
     private var deviceStatusSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Image(systemName: isConnected ? "sdcard.fill" : "cable.connector.slash")
-                    .foregroundColor(isConnected ? .blue : .gray)
+                Image(systemName: hasActiveDevice ? "sdcard.fill" : "cable.connector.slash")
+                    .foregroundColor(hasActiveDevice ? .blue : .gray)
                     .font(.title2)
                     .frame(width: 28)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(deviceName)
+                    Text(detector.activeDevice?.deviceType.rawValue ?? "未检测到 DJI 设备")
                         .font(.subheadline)
                         .fontWeight(.semibold)
-                    Text(deviceDetail)
+                    Text(detector.activeDevice?.volumeName ?? "请插入 Pocket 3 / 4、360 全景相机或插卡")
                         .font(.caption2)
                         .foregroundColor(.secondary)
-                        .lineLimit(2)
+                        .lineLimit(1)
                 }
                 Spacer()
+                if isScanning {
+                    ProgressView()
+                        .scaleEffect(0.7)
+                }
             }
             .padding(10)
             .background(Color(nsColor: .controlBackgroundColor))
@@ -84,12 +97,12 @@ struct MenuBarView: View {
     private var syncSummarySection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("待同步素材")
+                Text("待同步高价值素材")
                     .font(.caption)
                     .fontWeight(.medium)
                     .foregroundColor(.secondary)
                 Spacer()
-                Text("\(pendingFileCount) 个文件 · \(formattedBytes(totalSizeBytes))")
+                Text("\(scanResult.items.count) 个文件 · \(formattedBytes(scanResult.totalSizeBytes))")
                     .font(.caption)
                     .fontWeight(.semibold)
             }
@@ -109,14 +122,27 @@ struct MenuBarView: View {
                     }
                 }
             } else {
-                HStack {
-                    Label("自动过滤 .LRF 预览代理", systemImage: "checkmark.shield")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                    Spacer()
-                    Label("保留 .WAV/.SRT", systemImage: "waveform")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    if scanResult.ignoredCount > 0 {
+                        HStack {
+                            Image(systemName: "checkmark.shield.fill")
+                                .foregroundColor(.green)
+                                .font(.caption2)
+                            Text("已自动过滤 \(scanResult.ignoredCount) 个 .LRF 低清代理 (节省 \(formattedBytes(scanResult.ignoredSizeBytes)))")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    } else {
+                        HStack {
+                            Label("自动过滤 .LRF 预览代理", systemImage: "checkmark.shield")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Label("保留 .WAV/.SRT", systemImage: "waveform")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
                 }
             }
         }
@@ -137,17 +163,17 @@ struct MenuBarView: View {
                 .padding(.vertical, 4)
             }
             .buttonStyle(.borderedProminent)
-            .disabled(!isConnected || isSyncing)
+            .disabled(!hasActiveDevice || scanResult.items.isEmpty || isSyncing)
 
             Button(action: scanDeviceManually) {
                 HStack {
                     Image(systemName: "arrow.clockwise")
-                    Text("手动重新扫描挂载设备")
+                    Text(isScanning ? "正在扫描设备..." : "手动重新扫描挂载设备")
                 }
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
-            .disabled(isSyncing)
+            .disabled(isScanning || isSyncing)
         }
     }
 
@@ -173,13 +199,29 @@ struct MenuBarView: View {
 
     // MARK: - 业务交互动作 (Actions)
 
+    private func triggerMediaScan() async {
+        guard let device = detector.activeDevice else {
+            scanResult = .empty
+            return
+        }
+        isScanning = true
+        let result = await scanner.scan(dcimURL: device.dcimURL)
+        await MainActor.run {
+            self.scanResult = result
+            self.isScanning = false
+        }
+    }
+
     private func startSyncAction() {
         isSyncing = true
         syncProgress = 0.05
     }
 
     private func scanDeviceManually() {
-        // 稍后在 P2 接入 DeviceDetector 触发
+        detector.scanExistingVolumes()
+        Task {
+            await triggerMediaScan()
+        }
     }
 
     private func openPreferences() {

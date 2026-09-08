@@ -12,13 +12,34 @@ let package = Package(
         .executable(
             name: "DJIToDriveApp",
             targets: ["DJIToDriveApp"]
+        ),
+        .library(
+            name: "DeviceDetector",
+            targets: ["DeviceDetector"]
+        ),
+        .library(
+            name: "MediaScanner",
+            targets: ["MediaScanner"]
         )
     ],
     dependencies: [],
     targets: [
+        .target(
+            name: "DeviceDetector",
+            dependencies: [],
+            path: "Sources/DeviceDetector"
+        ),
+        .target(
+            name: "MediaScanner",
+            dependencies: [],
+            path: "Sources/MediaScanner"
+        ),
         .executableTarget(
             name: "DJIToDriveApp",
-            dependencies: [],
+            dependencies: [
+                "DeviceDetector",
+                "MediaScanner"
+            ],
             path: "Sources/DJIToDriveApp"
         )
     ]

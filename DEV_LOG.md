@@ -44,3 +44,21 @@
   3. 配置 `Info.plist`（注入 `LSUIElement=true` 菜单栏常驻元数据），编写 `package_app.sh` 组装原生应用包并自动发布到桌面。
 - **验证结果**：`swift build -c release` 构建耗时 0.10s 成功，`/Users/qianliangjun/Desktop/DJIToDrive.app` 已生成并刷新图标，双击可直接拉起常驻菜单栏。
 ---
+
+### 📅 [2026-09-08 23:38] 启动故障修复与 P2 硬件感知模块正式交付
+- **操作类型**：`[修复]` / `[新增]`
+- **涉及文件**：
+  - `Sources/DeviceDetector/DeviceDetector.swift`（修改：修复 Swift 6 deinit 非隔离与 Task 主线程派发）
+  - `Sources/DJIToDriveApp/AppDelegate.swift`（修改：注入启动 0.3s 主动展开反馈，设置兼容相机图标）
+  - `scripts/package_app.sh`（修改：打包注入 `xattr -cr` 与 `codesign --force --deep --sign -` 签名）
+  - `DEV_LOG.md`（修改）
+- **改动背景与原理**：
+  - 针对用户反馈的"打不开"问题，溯源底层发现缺少 macOS 原生代码签名与隔离属性，导致 Gatekeeper 静默拦截；
+  - 同时由于应用为 `LSUIElement=true` 常驻型应用，启动时缺少可视化反馈。
+  - 完成 `DeviceDetector` 的 Swift 6 并发适配，并为打包好的应用执行 Ad-hoc 签名与隔离清除。
+- **主要改动细节**：
+  1. 引入 `codesign --force --deep --sign -` 完整签名，消除 AMFI/Gatekeeper 运行拦截，`codesign -vvv` 验证满足系统 Designated Requirement。
+  2. 在 `AppDelegate` 中加入启动 0.3s 自动展开控制台机制，使用户双击即感知 App 已拉起。
+  3. 完成 `DeviceDetector` 与 `MediaScanner` 在主应用的装配联调。
+- **验证结果**：`open /Users/qianliangjun/Desktop/DJIToDrive.app` 运行正常，后台进程活跃（PID 17019），桌面双击即刻打开并展开控制台。
+---
