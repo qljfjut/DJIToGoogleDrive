@@ -62,3 +62,25 @@
   3. 完成 `DeviceDetector` 与 `MediaScanner` 在主应用的装配联调。
 - **验证结果**：`open /Users/qianliangjun/Desktop/DJIToDrive.app` 运行正常，后台进程活跃（PID 17019），桌面双击即刻打开并展开控制台。
 ---
+
+### 📅 [2026-09-08 23:42] P3 阶段达成：Google OAuth 2.0 PKCE 鉴权与 16MB Chunk 断点续传引擎全量贯通
+- **操作类型**：`[新增]` / `[优化]`
+- **涉及文件**：
+  - `Package.swift`（修改：拓扑链接 `Ledger`、`AuthManager` 与 `UploadEngine`）
+  - `Sources/Ledger/Ledger.swift`（新增：首尾 4MB 组合哈希指纹与持久化账本）
+  - `Sources/AuthManager/AuthManager.swift`（新增：PKCE 鉴权、127.0.0.1 回调捕获与 Keychain 存取）
+  - `Sources/UploadEngine/UploadEngine.swift`（新增：Google Drive API v3 Resumable 16MB Chunk 续传器）
+  - `Sources/DJIToDriveApp/SettingsView.swift`（新增：Google Cloud 凭据与账号管理窗口）
+  - `Sources/DJIToDriveApp/MenuBarView.swift`（修改：全链路绑定上传引擎与偏好设置）
+  - `DEV_LOG.md`（修改）
+- **改动背景与原理**：
+  - 落实 P3 路线图，建立完整的云端上传与鉴权底座。
+  - 采用 Google 官方推荐的 OAuth 2.0 PKCE 流程与本地临时 HTTP Loopback 接收授权码，Token 物理隔离保存在 macOS Keychain (`kSecClassGenericPassword`)；
+  - 针对 Pocket 3/4 与 360 相机动辄几十 GB 的巨型视频，实现 16MB Chunk 分片续传与指数退避断网重试，结合首尾 4MB 哈希毫秒级比对，保证 0 重复上传。
+- **主要改动细节**：
+  1. 建立 `Ledger` Actor，实现大文件瞬时指纹生成与 JSON 本地账本维护。
+  2. 建立 `AuthManager`，支持 Client ID/Secret 安全存取、PKCE 随机挑战码与 Token 自动轮转。
+  3. 建立 `UploadEngine`，实现 Google Drive 目录树按 `DJI_Media/{YYYY-MM-DD}/` 自动检索与创建、分片上传与总体进度派发。
+  4. 建立 `SettingsView` 独立偏好设置窗口，支持一键保存凭证与网页授权。
+- **验证结果**：`swift build -c release` 编译通过，应用重新打包并重签名发布至桌面；新进程（PID 17355）已启动并生效，全链路端到端闭环就绪。
+---

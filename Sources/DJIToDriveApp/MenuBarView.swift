@@ -1,22 +1,29 @@
 // ====================================
-// 📁 文件职责：菜单栏快捷控制面板 SwiftUI 视图与设备感知状态绑定
-// 包含：硬件热插拔实时响应、媒体资产扫描与过滤汇总、手动扫描重试
-// 不包含：底层 Google Drive HTTP 协议与 Keychain 读写
-// 依赖：SwiftUI, AppKit, DeviceDetector, MediaScanner
+// 📁 文件职责：菜单栏快捷控制面板 SwiftUI 视图与设备感知/上传引擎状态绑定
+// 包含：硬件热插拔实时响应、媒体资产扫描与过滤汇总、Google Drive 分片上传触发与进度反馈
+// 不包含：底层的 POSIX 监听与 Keychain 底层 API
+// 依赖：SwiftUI, AppKit, DeviceDetector, MediaScanner, AuthManager, UploadEngine
 // ====================================
 
 import SwiftUI
 import DeviceDetector
 import MediaScanner
+import AuthManager
+import UploadEngine
 
 struct MenuBarView: View {
     @StateObject private var detector = DeviceDetector()
+    @ObservedObject private var authManager = AuthManager.shared
+    @StateObject private var uploadEngine = UploadEngine()
     private let scanner = MediaScanner()
     
     @State private var scanResult: ScanResult = .empty
     @State private var isScanning: Bool = false
-    @State private var isSyncing: Bool = false
-    @State private var syncProgress: Double = 0.0
+    @State private var uploadErrorMessage: String?
+    @State private var uploadSuccessMessage: String?
+    
+    // 独立设置窗口引用
+    @State private var settingsWindow: NSWindow?
 
     private var hasActiveDevice: Bool {
         detector.activeDevice != nil
@@ -35,7 +42,7 @@ struct MenuBarView: View {
             footerSection
         }
         .padding(14)
-        .frame(width: 360, height: 420)
+        .frame(width: 360, height: 430)
         .task(id: detector.activeDevice?.id) {
             await triggerMediaScan()
         }
@@ -52,9 +59,9 @@ struct MenuBarView: View {
                 Text("DJIToDrive")
                     .font(.headline)
                     .fontWeight(.bold)
-                Text("DJI 媒体全自动云端同步器")
+                Text(authManager.isAuthenticated ? "Google Drive 已就绪" : "Google 账号未连接")
                     .font(.caption2)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(authManager.isAuthenticated ? .secondary : .orange)
             }
             Spacer()
             Circle()
@@ -107,23 +114,32 @@ struct MenuBarView: View {
                     .fontWeight(.semibold)
             }
 
-            if isSyncing {
+            if uploadEngine.isUploading, let progress = uploadEngine.currentProgress {
                 VStack(spacing: 4) {
-                    ProgressView(value: syncProgress, total: 1.0)
+                    ProgressView(value: progress.overallProgress, total: 1.0)
                         .progressViewStyle(.linear)
                     HStack {
-                        Text("正在分片同步到 Google Drive...")
+                        Text("[\(progress.currentFileIndex)/\(progress.totalFiles)] \(progress.currentFilename)")
                             .font(.caption2)
                             .foregroundColor(.secondary)
+                            .lineLimit(1)
                         Spacer()
-                        Text("\(Int(syncProgress * 100))%")
+                        Text("\(Int(progress.overallProgress * 100))%")
                             .font(.caption2)
                             .fontWeight(.bold)
                     }
                 }
             } else {
                 VStack(alignment: .leading, spacing: 4) {
-                    if scanResult.ignoredCount > 0 {
+                    if let success = uploadSuccessMessage {
+                        Text(success)
+                            .font(.caption2)
+                            .foregroundColor(.green)
+                    } else if let err = uploadErrorMessage {
+                        Text(err)
+                            .font(.caption2)
+                            .foregroundColor(.red)
+                    } else if scanResult.ignoredCount > 0 {
                         HStack {
                             Image(systemName: "checkmark.shield.fill")
                                 .foregroundColor(.green)
@@ -153,17 +169,17 @@ struct MenuBarView: View {
 
     private var actionButtonGroup: some View {
         VStack(spacing: 8) {
-            Button(action: startSyncAction) {
+            Button(action: handleSyncOrAuthAction) {
                 HStack {
-                    Image(systemName: isSyncing ? "arrow.triangle.2.circlepath" : "icloud.and.arrow.up.fill")
-                    Text(isSyncing ? "正在同步中..." : "一键开始上传至 Google Drive")
+                    Image(systemName: uploadEngine.isUploading ? "arrow.triangle.2.circlepath" : (authManager.isAuthenticated ? "icloud.and.arrow.up.fill" : "key.fill"))
+                    Text(syncButtonTitle)
                         .fontWeight(.semibold)
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 4)
             }
             .buttonStyle(.borderedProminent)
-            .disabled(!hasActiveDevice || scanResult.items.isEmpty || isSyncing)
+            .disabled(!hasActiveDevice || scanResult.items.isEmpty || uploadEngine.isUploading)
 
             Button(action: scanDeviceManually) {
                 HStack {
@@ -173,13 +189,23 @@ struct MenuBarView: View {
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
-            .disabled(isScanning || isSyncing)
+            .disabled(isScanning || uploadEngine.isUploading)
         }
+    }
+
+    private var syncButtonTitle: String {
+        if uploadEngine.isUploading {
+            return "正在 16MB Chunk 断点续传中..."
+        }
+        if !authManager.isAuthenticated {
+            return "请先在设置中连接 Google 账号"
+        }
+        return "一键开始上传至 Google Drive"
     }
 
     private var footerSection: some View {
         HStack {
-            Button("偏好设置...") {
+            Button("偏好设置与 Google 账号...") {
                 openPreferences()
             }
             .buttonStyle(.plain)
@@ -212,9 +238,27 @@ struct MenuBarView: View {
         }
     }
 
-    private func startSyncAction() {
-        isSyncing = true
-        syncProgress = 0.05
+    private func handleSyncOrAuthAction() {
+        if !authManager.isAuthenticated {
+            openPreferences()
+            return
+        }
+        
+        uploadErrorMessage = nil
+        uploadSuccessMessage = nil
+        
+        Task {
+            do {
+                try await uploadEngine.uploadItems(scanResult.items)
+                await MainActor.run {
+                    self.uploadSuccessMessage = "🎉 全量素材已成功同步到 Google Drive (DJI_Media 目录)！"
+                }
+            } catch {
+                await MainActor.run {
+                    self.uploadErrorMessage = "上传失败: \(error.localizedDescription)"
+                }
+            }
+        }
     }
 
     private func scanDeviceManually() {
@@ -225,7 +269,25 @@ struct MenuBarView: View {
     }
 
     private func openPreferences() {
-        // 稍后在 P3 接入独立 Settings 窗口
+        if let existing = settingsWindow, existing.isVisible {
+            existing.makeKeyAndOrderFront(nil)
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            return
+        }
+        
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: 460),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.center()
+        window.title = "DJIToDrive 偏好设置"
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: SettingsView())
+        window.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        self.settingsWindow = window
     }
 
     private func formattedBytes(_ bytes: Int64) -> String {

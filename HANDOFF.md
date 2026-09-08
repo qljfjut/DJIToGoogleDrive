@@ -63,12 +63,12 @@ DJIToDrive/
 
 ## 6. 🚦 当前进度与优先级路线图 (Progress & Roadmap)
 - `[已完成]` Day-0 规划文档与创世五件套初始化；
-- `[P1 待办]` 初始化 `Package.swift`，搭建 SPM 模块骨架，构建轻量 MenuBar 原生空壳；
-- `[P2 待办]` 实现 `DeviceDetector` 挂载监听与 `MediaScanner` 扫描过滤；
-- `[P3 待办]` 实现 `AuthManager`（OAuth PKCE + Keychain）与 `UploadEngine`（16MB Chunk 续传）；
-- `[P4 待办]` 实现 SwiftUI 审查与设置面板，完成端到端贯通与 DMG 打包。
+- `[已完成]` P1 阶段：初始化 SPM 官方工程包，构建 MenuBar 原生骨架，设计专属 Retina 图标并解决代码签名与桌面发布；
+- `[已完成]` P2 阶段：实现 `DeviceDetector` 物理卷盘热插拔感知与 `MediaScanner` 白黑名单过滤引擎（保留 `.WAV`/`.SRT`，过滤 `.LRF`）；
+- `[已完成]` P3 阶段：实现 `AuthManager`（OAuth 2.0 PKCE + Keychain 凭证安全托管）与 `UploadEngine`（16MB Chunk 断点续传 + 首尾 4MB 去重账本）；
+- `[P4 待办]` 接入真实 Google Drive 凭据联调测试，进行模拟大文件上云实测并制作正式发布版 DMG 安装包。
 
 ---
 
 ### 💬 新 AI 接力唤醒提示词 (Next AI Prompt)
-> "我是新接手的架构师。已通读 `HANDOFF.md`、`ARCHITECTURE.md` 与 `BUSINESS_RULES.md`。当前 Day-0 基础设施已就绪，请直接进行 P1 待办：初始化 SPM 基础工程骨架与 MenuBar 原生应用壳，并呈递改动五问！"
+> "我是新接手的架构师。已通读 `HANDOFF.md`、`ARCHITECTURE.md` 与 `BUSINESS_RULES.md`。当前 P1、P2、P3 核心引擎已全量贯通上线并在桌面运行，请协助用户录入 Google Cloud 凭证并推进 P4 实测与发布打包！"

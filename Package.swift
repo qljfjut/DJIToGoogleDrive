@@ -20,6 +20,18 @@ let package = Package(
         .library(
             name: "MediaScanner",
             targets: ["MediaScanner"]
+        ),
+        .library(
+            name: "Ledger",
+            targets: ["Ledger"]
+        ),
+        .library(
+            name: "AuthManager",
+            targets: ["AuthManager"]
+        ),
+        .library(
+            name: "UploadEngine",
+            targets: ["UploadEngine"]
         )
     ],
     dependencies: [],
@@ -34,11 +46,33 @@ let package = Package(
             dependencies: [],
             path: "Sources/MediaScanner"
         ),
+        .target(
+            name: "Ledger",
+            dependencies: [],
+            path: "Sources/Ledger"
+        ),
+        .target(
+            name: "AuthManager",
+            dependencies: [],
+            path: "Sources/AuthManager"
+        ),
+        .target(
+            name: "UploadEngine",
+            dependencies: [
+                "Ledger",
+                "AuthManager",
+                "MediaScanner"
+            ],
+            path: "Sources/UploadEngine"
+        ),
         .executableTarget(
             name: "DJIToDriveApp",
             dependencies: [
                 "DeviceDetector",
-                "MediaScanner"
+                "MediaScanner",
+                "Ledger",
+                "AuthManager",
+                "UploadEngine"
             ],
             path: "Sources/DJIToDriveApp"
         )
