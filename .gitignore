@@ -21,6 +21,8 @@ backups/
 Packages/
 Package.pins
 Package.resolved
+*.app/
+
 
 # Xcode 项目与个人用户配置
 *.xcodeproj/

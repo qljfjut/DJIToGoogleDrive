@@ -24,3 +24,23 @@
   4. 建立 `.gitignore` 与 `HANDOFF.md`，锁定 Day-0 初始化状态。
 - **验证结果**：规划文档与基础设施就绪，Git 创世提交即将生成。
 ---
+
+### 📅 [2026-09-08 22:36] P1 阶段达成：MenuBar 原生应用骨架与桌面专属图标打包发布
+- **操作类型**：`[新增]` / `[修复]`
+- **涉及文件**：
+  - `Package.swift`（新增）
+  - `Sources/DJIToDriveApp/AppMain.swift`（新增）
+  - `Sources/DJIToDriveApp/AppDelegate.swift`（新增）
+  - `Sources/DJIToDriveApp/MenuBarView.swift`（新增）
+  - `Resources/Info.plist`（新增）
+  - `scripts/package_app.sh`（新增）
+  - `.gitignore`（修改）
+- **改动背景与原理**：
+  - 落实 P1 路线图，建立基于 SPM 的 macOS 原生工程，构建常驻顶部菜单栏的 StatusItem 与 SwiftUI 控制面板原型。
+  - 按照用户指示生成可视化应用图标与桌面可双击运行的应用包（`.app`），解决 Swift 6 严格并发 `@MainActor` 顶层隔离限制与 `sips`/`iconutil` 格式生成流水线。
+- **主要改动细节**：
+  1. 升级入口为 `@main struct DJIToDriveApp`，显式标注 `@MainActor` 调度主循环，消除 Actor 隔离警告。
+  2. 设计生成融合 DJI 镜头光圈与 Google Drive 三角配色的 macOS Squircle 高清专属图标，并转码为符合 Apple Retina 规范的多分辨率 `AppIcon.icns`。
+  3. 配置 `Info.plist`（注入 `LSUIElement=true` 菜单栏常驻元数据），编写 `package_app.sh` 组装原生应用包并自动发布到桌面。
+- **验证结果**：`swift build -c release` 构建耗时 0.10s 成功，`/Users/qianliangjun/Desktop/DJIToDrive.app` 已生成并刷新图标，双击可直接拉起常驻菜单栏。
+---
