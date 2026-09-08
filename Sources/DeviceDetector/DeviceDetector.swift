@@ -1,6 +1,6 @@
 // ====================================
 // 📁 文件职责：物理卷盘监听与 DJI 硬件特征智能识别器
-// 包含：NSWorkspace 卷盘挂载/卸载事件监听、Pocket 3/4 与 360 全景特征比对、设备列表状态发布
+// 包含：NSWorkspace 卷盘挂载/卸载事件监听、Pocket 3/4 与 360 全景特征比对、双卷盘智能优先级选择
 // 不包含：具体媒体文件深度遍历与云端网络传输
 // 依赖：Foundation, AppKit
 // ====================================
@@ -93,7 +93,7 @@ public final class DeviceDetector: ObservableObject {
     
     // MARK: - 扫描与特征匹配 (Scan & Pattern Matching)
     
-    /// 扫描当前已挂载在 /Volumes 下的所有卷盘
+    /// 扫描当前已挂载在 /Volumes 下的所有卷盘，并自动优先选中包含实际素材的卷盘
     public func scanExistingVolumes() {
         let fileManager = FileManager.default
         guard let volumeURLs = fileManager.mountedVolumeURLs(
@@ -110,6 +110,16 @@ public final class DeviceDetector: ObservableObject {
             }
         }
         
+        // 智能优先级排序：优先激活 DCIM 下有实际子文件内容的卷盘（解决双卷盘时误选空机身内置存储的问题）
+        detected.sort { dev1, dev2 in
+            let hasMedia1 = self.volumeContainsMedia(dcimURL: dev1.dcimURL)
+            let hasMedia2 = self.volumeContainsMedia(dcimURL: dev2.dcimURL)
+            if hasMedia1 != hasMedia2 {
+                return hasMedia1 && !hasMedia2
+            }
+            return dev1.volumeName > dev2.volumeName
+        }
+        
         self.connectedDevices = detected
         self.activeDevice = detected.first
     }
@@ -118,8 +128,17 @@ public final class DeviceDetector: ObservableObject {
         if let device = inspectVolume(at: url) {
             if !connectedDevices.contains(where: { $0.id == device.id }) {
                 connectedDevices.append(device)
-                activeDevice = device
             }
+            // 重新重排优先级
+            connectedDevices.sort { dev1, dev2 in
+                let hasMedia1 = self.volumeContainsMedia(dcimURL: dev1.dcimURL)
+                let hasMedia2 = self.volumeContainsMedia(dcimURL: dev2.dcimURL)
+                if hasMedia1 != hasMedia2 {
+                    return hasMedia1 && !hasMedia2
+                }
+                return dev1.volumeName > dev2.volumeName
+            }
+            self.activeDevice = connectedDevices.first
         }
     }
     
@@ -168,11 +187,11 @@ public final class DeviceDetector: ObservableObject {
         if upperName.contains("POCKET3") || upperName.contains("OSMO_POCKET") {
             return .pocket3
         }
-        if upperName.contains("360") || upperName.contains("PANORAMA") {
+        if upperName.contains("360") || upperName.contains("PANORAMA") || upperName.contains("OSMO360") {
             return .dji360
         }
         
-        // 2. 检查 DCIM 子目录签名
+        // 2. 检查 DCIM 子目录与签名
         let fileManager = FileManager.default
         guard let subdirs = try? fileManager.contentsOfDirectory(atPath: dcimURL.path) else {
             return .genericDJI
@@ -180,19 +199,35 @@ public final class DeviceDetector: ObservableObject {
         
         for dir in subdirs {
             let upperDir = dir.uppercased()
-            if upperDir.contains("PANORAMA") || upperDir.contains("360") {
+            // 360 相机常见目录签名：CAM_001、PANORAMA、360 等
+            if upperDir.contains("PANORAMA") || upperDir.contains("360") || upperDir.hasPrefix("CAM_") {
                 return .dji360
             }
             if upperDir.contains("100MEDIA") {
                 let mediaPath = dcimURL.appendingPathComponent(dir)
                 if let files = try? fileManager.contentsOfDirectory(atPath: mediaPath.path) {
                     if files.contains(where: { $0.hasPrefix("DJI_") }) {
-                        return .pocket3 // 经典 Pocket 3 航拍结构
+                        return .pocket3
                     }
                 }
             }
         }
         
         return .genericDJI
+    }
+    
+    /// 检查 DCIM 目录下是否存在子文件
+    private func volumeContainsMedia(dcimURL: URL) -> Bool {
+        let fileManager = FileManager.default
+        guard let subdirs = try? fileManager.contentsOfDirectory(atPath: dcimURL.path) else {
+            return false
+        }
+        for sub in subdirs {
+            let subURL = dcimURL.appendingPathComponent(sub)
+            if let files = try? fileManager.contentsOfDirectory(atPath: subURL.path), !files.isEmpty {
+                return true
+            }
+        }
+        return false
     }
 }

@@ -1,6 +1,6 @@
 // ====================================
 // 📁 文件职责：DCIM 目录深度遍历与媒体资产智能过滤引擎
-// 包含：白名单资产收集（MP4/MOV/DNG/WAV/SRT）、.LRF/.THM 代理丢弃、文件尺寸与拍摄时间提取
+// 包含：白名单资产收集（MP4/MOV/OSV/DNG/WAV/SRT）、.LRF/.THM 代理丢弃、文件尺寸与拍摄时间提取
 // 不包含：硬件热插拔检测与云端断点续传
 // 依赖：Foundation
 // ====================================
@@ -9,7 +9,7 @@ import Foundation
 
 /// 媒体资产大类
 public enum MediaKind: String, Sendable, CaseIterable {
-    case video = "主视频流 (4K/8K/360)"
+    case video = "主视频流 (4K/8K/360 .OSV/.MP4)"
     case rawPhoto = "RAW 照片 (DNG)"
     case jpegPhoto = "标准照片 (JPG)"
     case audioTrack = "专业独立音频 (DJI Mic 2 .WAV)"
@@ -73,8 +73,8 @@ public struct ScanResult: Sendable {
 /// 媒体扫描与过滤引擎
 public final class MediaScanner: Sendable {
     
-    // 允许同步上云的高价值素材白名单（小写）
-    private static let allowedVideoExtensions: Set<String> = ["mp4", "mov"]
+    // 允许同步上云的高价值素材白名单（小写，特别包含 360 相机专有 .osv 视频）
+    private static let allowedVideoExtensions: Set<String> = ["mp4", "mov", "osv"]
     private static let allowedRawExtensions: Set<String> = ["dng"]
     private static let allowedPhotoExtensions: Set<String> = ["jpg", "jpeg"]
     private static let allowedAudioExtensions: Set<String> = ["wav"]
@@ -103,7 +103,7 @@ public final class MediaScanner: Sendable {
         var ignoredFileCount: Int = 0
         var ignoredTotalSize: Int64 = 0
         
-        for case let fileURL as URL in enumerator {
+        while let fileURL = enumerator.nextObject() as? URL {
             // 排除 macOS 系统双元数据（如 ._DJI_0001.MP4）
             let filename = fileURL.lastPathComponent
             if filename.hasPrefix("._") || filename.hasPrefix(".") {
@@ -128,7 +128,8 @@ public final class MediaScanner: Sendable {
             
             // 2. 命中白名单，分类归档
             if let kind = resolveMediaKind(forExtension: ext) {
-                let date = resourceValues.creationDate ?? resourceValues.contentModificationDate ?? Date()
+                // 优先从 DJI/Osmo 文件名（例如 CAM_20260516142802_0001_D.OSV）精确解析拍摄时间
+                let date = parseDateFromFilename(filename) ?? resourceValues.creationDate ?? resourceValues.contentModificationDate ?? Date()
                 let item = ScannedMediaItem(
                     filename: filename,
                     fileURL: fileURL,
@@ -145,7 +146,7 @@ public final class MediaScanner: Sendable {
             }
         }
         
-        // 按时间倒序排序（最新素材优先呈现）
+        // 按拍摄时间倒序排序（最新素材优先呈现）
         validItems.sort { $0.creationDate > $1.creationDate }
         
         let elapsed = CFAbsoluteTimeGetCurrent() - startTime
@@ -173,6 +174,21 @@ public final class MediaScanner: Sendable {
         }
         if Self.allowedSubtitleExtensions.contains(ext) {
             return .subtitleMeta
+        }
+        return nil
+    }
+    
+    /// 从诸如 CAM_20260516142802_0001_D.OSV 的标准命名中提取拍摄时间
+    private func parseDateFromFilename(_ filename: String) -> Date? {
+        let parts = filename.components(separatedBy: "_")
+        if parts.count >= 2 {
+            let candidate = parts[1]
+            if candidate.count == 14 {
+                let formatter = DateFormatter()
+                formatter.dateFormat = "yyyyMMddHHmmss"
+                formatter.locale = Locale(identifier: "en_US_POSIX")
+                return formatter.date(from: candidate)
+            }
         }
         return nil
     }

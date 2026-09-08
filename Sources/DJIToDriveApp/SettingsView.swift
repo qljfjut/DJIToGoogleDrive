@@ -17,6 +17,7 @@ struct SettingsView: View {
     @State private var isAuthenticating: Bool = false
     @State private var errorMessage: String?
     @State private var saveSuccessMessage: String?
+    @State private var showSecret: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -61,16 +62,51 @@ struct SettingsView: View {
                 Text("Client ID:")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                TextField("例如: 123456...apps.googleusercontent.com", text: $clientIdInput)
-                    .textFieldStyle(.roundedBorder)
+                HStack(spacing: 8) {
+                    TextField("例如: 123456...apps.googleusercontent.com", text: $clientIdInput)
+                        .textFieldStyle(.roundedBorder)
+                    Button {
+                        if let pasteString = NSPasteboard.general.string(forType: .string) {
+                            clientIdInput = pasteString.trimmingCharacters(in: .whitespacesAndNewlines)
+                        }
+                    } label: {
+                        Label("粘贴", systemImage: "doc.on.clipboard")
+                    }
+                    .buttonStyle(.bordered)
+                    .help("从系统剪贴板一键粘贴 Client ID")
+                }
             }
             
             VStack(alignment: .leading, spacing: 6) {
                 Text("Client Secret:")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                SecureField("例如: GOCSPX-...", text: $clientSecretInput)
-                    .textFieldStyle(.roundedBorder)
+                HStack(spacing: 8) {
+                    if showSecret {
+                        TextField("例如: GOCSPX-...", text: $clientSecretInput)
+                            .textFieldStyle(.roundedBorder)
+                    } else {
+                        SecureField("例如: GOCSPX-...", text: $clientSecretInput)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    Button {
+                        showSecret.toggle()
+                    } label: {
+                        Image(systemName: showSecret ? "eye.slash" : "eye")
+                    }
+                    .buttonStyle(.bordered)
+                    .help(showSecret ? "隐藏密钥" : "显示明文密钥")
+                    
+                    Button {
+                        if let pasteString = NSPasteboard.general.string(forType: .string) {
+                            clientSecretInput = pasteString.trimmingCharacters(in: .whitespacesAndNewlines)
+                        }
+                    } label: {
+                        Label("粘贴", systemImage: "doc.on.clipboard")
+                    }
+                    .buttonStyle(.bordered)
+                    .help("从系统剪贴板一键粘贴 Client Secret")
+                }
             }
             
             HStack {

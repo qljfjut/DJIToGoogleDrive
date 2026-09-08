@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var popover: NSPopover?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        setupMainMenu()
         setupStatusItem()
         setupPopover()
         
@@ -21,6 +22,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             self?.showPopover()
         }
+    }
+
+    /// 注册系统级标准 Edit 菜单，打通 macOS 键盘快捷键响应链 (Cmd+V, Cmd+C, Cmd+A, Cmd+Z)
+    private func setupMainMenu() {
+        let mainMenu = NSMenu()
+        let editMenuItem = NSMenuItem()
+        mainMenu.addItem(editMenuItem)
+        
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        editMenu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        editMenu.addItem(NSMenuItem.separator())
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        
+        editMenuItem.submenu = editMenu
+        NSApplication.shared.mainMenu = mainMenu
     }
 
     private func setupStatusItem() {

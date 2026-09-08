@@ -351,7 +351,7 @@ public final class UploadEngine: ObservableObject {
     
     private func mimeType(for ext: String) -> String {
         switch ext.lowercased() {
-        case "mp4": return "video/mp4"
+        case "mp4", "osv": return "video/mp4"
         case "mov": return "video/quicktime"
         case "jpg", "jpeg": return "image/jpeg"
         case "dng": return "image/x-adobe-dng"

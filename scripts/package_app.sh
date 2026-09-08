@@ -8,7 +8,7 @@
 set -e
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ICON_SRC="/Users/qianliangjun/.gemini/antigravity/brain/5a3ec9d4-0fa9-4f2a-95e0-13c27fe194c4/dji_drive_icon_1788877977561.jpg"
+ICON_SRC="$PROJECT_ROOT/Resources/AppIcon.png"
 APP_NAME="DJIToDrive"
 BUNDLE_DIR="$PROJECT_ROOT/$APP_NAME.app"
 DESKTOP_DIR="/Users/qianliangjun/Desktop"
