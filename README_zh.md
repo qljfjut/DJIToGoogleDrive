@@ -18,7 +18,8 @@
   <img src="https://img.shields.io/badge/Swift-5.10+-F05138?style=flat&logo=swift&logoColor=white" alt="Swift" />
   <img src="https://img.shields.io/badge/macOS-13.0+_Ventura+-000000?style=flat&logo=apple&logoColor=white" alt="macOS" />
   <img src="https://img.shields.io/badge/Google_Drive-Resumable_API_v3-4285F4?style=flat&logo=googledrive&logoColor=white" alt="Google Drive" />
-  <img src="https://img.shields.io/badge/Architecture-SPM_Modular-blue?style=flat" alt="SPM" />
+  <a href="https://www.ihavean.app"><img src="https://img.shields.io/badge/Portal-ihavean.app-blue?style=flat&logo=safari&logoColor=white" alt="我有神器" /></a>
+  <a href="https://t.me/ihaveanapp"><img src="https://img.shields.io/badge/Telegram-@ihaveanapp-2CA5E0?style=flat&logo=telegram&logoColor=white" alt="Telegram 频道" /></a>
   <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License" />
 </p>
 
@@ -106,11 +107,13 @@ chmod +x scripts/package_app.sh
 
 ---
 
-## 👨‍💻 作者与社区交流 (Author & Community)
+## 🌟 推荐神器 / 社区生态 (Community Showcase)
 
-- 🌐 **个人网站**：[qljfjut.com](https://qljfjut.com)
-- 💬 **Telegram 交流**：[@qljfjut](https://t.me/qljfjut)
-- 📮 欢迎交流 DJI 素材工作流自动化、大文件云端同步体验与功能建议！
+> 🚀 **[我有神器 · I Have An App](https://www.ihavean.app)** — 高质感极简纯净科技极客门户，深度拆解 Apple 专区、智能出行、影像创作、科技快讯与极客实战教程。
+
+- 🌐 **官方门户**：[www.ihavean.app](https://www.ihavean.app)
+- 💬 **Telegram 频道**：[@ihaveanapp](https://t.me/ihaveanapp)
+- 💡 **影像与生产力探索**：欢迎前往 [我有神器](https://www.ihavean.app) 探索更多 macOS 生产力工具、DJI 影像创作工作流与数码极客评测！
 
 ---
 

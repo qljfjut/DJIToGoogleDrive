@@ -18,7 +18,8 @@
   <img src="https://img.shields.io/badge/Swift-5.10+-F05138?style=flat&logo=swift&logoColor=white" alt="Swift" />
   <img src="https://img.shields.io/badge/macOS-13.0+_Ventura+-000000?style=flat&logo=apple&logoColor=white" alt="macOS" />
   <img src="https://img.shields.io/badge/Google_Drive-Resumable_API_v3-4285F4?style=flat&logo=googledrive&logoColor=white" alt="Google Drive" />
-  <img src="https://img.shields.io/badge/Architecture-SPM_Modular-blue?style=flat" alt="SPM" />
+  <a href="https://www.ihavean.app"><img src="https://img.shields.io/badge/Portal-ihavean.app-blue?style=flat&logo=safari&logoColor=white" alt="I Have An App" /></a>
+  <a href="https://t.me/ihaveanapp"><img src="https://img.shields.io/badge/Telegram-@ihaveanapp-2CA5E0?style=flat&logo=telegram&logoColor=white" alt="Telegram" /></a>
   <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License" />
 </p>
 
@@ -108,11 +109,13 @@ The script compiles the release binary via SPM, bundles `DJIToGoogleDrive.app`, 
 
 ---
 
-## 👨‍💻 Author & Community
+## 🌟 Powered By / Community Showcase
 
-- 🌐 **Website**: [qljfjut.com](https://qljfjut.com)
-- 💬 **Telegram**: [@qljfjut](https://t.me/qljfjut)
-- 📮 Feel free to open issues or discussions for DJI workflow optimizations, cloud sync enhancements, or new feature requests!
+> 🚀 **[我有神器 · I Have An App](https://www.ihavean.app)** — A premium, high-aesthetic tech geek portal covering deep-dive Apple ecosystem guides, next-generation automotive engineering, visual creation workflows, and practical geek tutorials.
+
+- 🌐 **Official Portal**: [www.ihavean.app](https://www.ihavean.app)
+- 💬 **Telegram Channel**: [@ihaveanapp](https://t.me/ihaveanapp)
+- 🎥 **Explore More**: Discover more curated macOS productivity tools, DJI videography gear setups, and tech insights at [ihavean.app](https://www.ihavean.app)!
 
 ---
 
