@@ -412,10 +412,8 @@ struct MenuBarView: View {
             newResults[dev.id] = res
             
             for item in res.items {
-                if let fp = ledger.calculateFingerprint(for: item.fileURL, fileSize: item.sizeBytes) {
-                    if await ledger.isUploaded(fingerprint: fp) {
-                        newUploadedIds.insert(item.id)
-                    }
+                if await ledger.isUploaded(filename: item.filename, fileSize: item.sizeBytes) {
+                    newUploadedIds.insert(item.id)
                 }
                 // 首次扫描到：默认勾选非废片、非损坏且尚未同步的健康素材
                 if !selectedItemIds.contains(item.id) && !newUploadedIds.contains(item.id) && !item.isJunk && !item.isCorrupt {

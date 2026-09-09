@@ -45,9 +45,15 @@ public actor Ledger {
         let ledgerDir = appSupport.appendingPathComponent("DJIToDrive", isDirectory: true)
         
         try? FileManager.default.createDirectory(at: ledgerDir, withIntermediateDirectories: true)
-        self.storageURL = ledgerDir.appendingPathComponent("ledger.json")
+        let url = ledgerDir.appendingPathComponent("ledger.json")
+        self.storageURL = url
         
-        load()
+        if let data = try? Data(contentsOf: url),
+           let decoded = try? JSONDecoder().decode([String: LedgerEntry].self, from: data) {
+            self.entries = decoded
+        } else {
+            self.entries = [:]
+        }
     }
     
     // MARK: - 指纹生成 (Fingerprint Calculation)
@@ -92,6 +98,11 @@ public actor Ledger {
         entries[fingerprint] != nil
     }
     
+    /// 基于文件名与文件体积在内存中极速判定是否已入账（耗时微秒级，避免慢速磁盘 I/O）
+    public func isUploaded(filename: String, fileSize: Int64) -> Bool {
+        entries.values.contains { $0.sourceFileName == filename && $0.fileSize == fileSize }
+    }
+    
     /// 获取已上传文件的云端记录
     public func getEntry(fingerprint: String) -> LedgerEntry? {
         entries[fingerprint]
@@ -118,14 +129,6 @@ public actor Ledger {
     }
     
     // MARK: - 持久化 (Persistence)
-    
-    private func load() {
-        guard let data = try? Data(contentsOf: storageURL),
-              let decoded = try? JSONDecoder().decode([String: LedgerEntry].self, from: data) else {
-            return
-        }
-        self.entries = decoded
-    }
     
     private func save() {
         let encoder = JSONEncoder()
