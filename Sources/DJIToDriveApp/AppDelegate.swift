@@ -204,8 +204,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func makeSymbolImage(name: String) -> NSImage? {
         let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
-        return NSImage(systemSymbolName: name, accessibilityDescription: "DJIToDrive")?
-            .withSymbolConfiguration(config)
+        guard let symbol = NSImage(systemSymbolName: name, accessibilityDescription: "DJIToDrive")?.withSymbolConfiguration(config) else {
+            return nil
+        }
+        let targetSize = NSSize(width: 18, height: 18)
+        let canvas = NSImage(size: targetSize, flipped: false) { rect in
+            let originX = (rect.width - symbol.size.width) / 2.0
+            let originY = (rect.height - symbol.size.height) / 2.0
+            let targetRect = NSRect(x: originX, y: originY, width: symbol.size.width, height: symbol.size.height)
+            symbol.draw(in: targetRect, from: .zero, operation: .sourceOver, fraction: 1.0)
+            return true
+        }
+        canvas.isTemplate = true
+        return canvas
     }
 
     // MARK: - 弹出面板与独立窗口 (Popover & Window Management)
