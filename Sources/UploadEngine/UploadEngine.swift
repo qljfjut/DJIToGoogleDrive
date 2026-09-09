@@ -54,6 +54,26 @@ public struct UploadResult: Sendable {
     }
 }
 
+extension Notification.Name {
+    public static let djiUploadLifecycleStateChanged = Notification.Name("DJIToDriveUploadLifecycleStateChanged")
+}
+
+public struct ResumableSessionRecord: Codable, Sendable {
+    public let filePath: String
+    public let fileSize: Int64
+    public let sessionURIString: String
+    public let destinationFolderId: String
+    public let createdAt: Date
+    
+    public init(filePath: String, fileSize: Int64, sessionURIString: String, destinationFolderId: String, createdAt: Date = Date()) {
+        self.filePath = filePath
+        self.fileSize = fileSize
+        self.sessionURIString = sessionURIString
+        self.destinationFolderId = destinationFolderId
+        self.createdAt = createdAt
+    }
+}
+
 @MainActor
 public final class UploadEngine: ObservableObject {
     private static let chunkSize: Int = 16 * 1024 * 1024 // 16MB 分片 (256KB 的 64 倍)
@@ -98,7 +118,13 @@ public final class UploadEngine: ObservableObject {
         
         isCancelled = false
         isUploading = true
-        defer { isUploading = false }
+        NotificationCenter.default.post(name: .djiUploadLifecycleStateChanged, object: nil, userInfo: ["state": "uploading"])
+        defer {
+            isUploading = false
+            if isCancelled {
+                NotificationCenter.default.post(name: .djiUploadLifecycleStateChanged, object: nil, userInfo: ["state": "idle"])
+            }
+        }
         
         let token = try await authManager.getValidAccessToken()
         let targetFolderInput = authManager.getTargetFolder()
@@ -197,6 +223,7 @@ public final class UploadEngine: ObservableObject {
             }
         }
         
+        NotificationCenter.default.post(name: .djiUploadLifecycleStateChanged, object: nil, userInfo: ["state": "completed"])
         return UploadResult(uploadedCount: uploadedCount, skippedCount: skippedCount, totalBytesUploaded: actualUploadedBytes)
     }
     
@@ -224,6 +251,96 @@ public final class UploadEngine: ObservableObject {
         onProgress?(state)
     }
     
+    // MARK: - 跨拔插/跨进程断点会话持久化 (Cross-Session Persistence)
+    
+    private var resumableSessionsURL: URL {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let dir = appSupport.appendingPathComponent("DJIToDrive", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("resumable_sessions.json")
+    }
+    
+    private func loadResumableSessions() -> [String: ResumableSessionRecord] {
+        guard let data = try? Data(contentsOf: resumableSessionsURL),
+              let decoded = try? JSONDecoder().decode([String: ResumableSessionRecord].self, from: data) else {
+            return [:]
+        }
+        return decoded
+    }
+    
+    private func saveResumableSession(_ record: ResumableSessionRecord) {
+        var sessions = loadResumableSessions()
+        sessions[record.filePath] = record
+        if let data = try? JSONEncoder().encode(sessions) {
+            try? data.write(to: resumableSessionsURL, options: .atomic)
+        }
+    }
+    
+    private func removeResumableSession(for filePath: String) {
+        var sessions = loadResumableSessions()
+        sessions.removeValue(forKey: filePath)
+        if let data = try? JSONEncoder().encode(sessions) {
+            try? data.write(to: resumableSessionsURL, options: .atomic)
+        }
+    }
+    
+    /// 获取或恢复上传会话，并探测 Google 当前已接收的字节偏移量
+    private func obtainSessionAndOffset(
+        item: ScannedMediaItem,
+        parentFolderId: String,
+        token: String
+    ) async throws -> (sessionURI: URL, startOffset: Int64, finishedFileId: String?) {
+        let sessions = loadResumableSessions()
+        if let existing = sessions[item.fileURL.path],
+           existing.fileSize == item.sizeBytes,
+           existing.destinationFolderId == parentFolderId,
+           Date().timeIntervalSince(existing.createdAt) < 7 * 86400,
+           let uri = URL(string: existing.sessionURIString) {
+            
+            // 向 Google 发送空包探活探测当前已收到的字节边界
+            var probeRequest = URLRequest(url: uri)
+            probeRequest.httpMethod = "PUT"
+            probeRequest.setValue("bytes */\(item.sizeBytes)", forHTTPHeaderField: "Content-Range")
+            probeRequest.setValue("0", forHTTPHeaderField: "Content-Length")
+            
+            if let (data, response) = try? await URLSession.shared.data(for: probeRequest),
+               let http = response as? HTTPURLResponse {
+                if http.statusCode == 308 {
+                    if let rangeHeader = http.value(forHTTPHeaderField: "Range"),
+                       let lastHyphen = rangeHeader.split(separator: "-").last,
+                       let lastByteReceived = Int64(lastHyphen) {
+                        let nextByte = lastByteReceived + 1
+                        return (sessionURI: uri, startOffset: nextByte, finishedFileId: nil)
+                    }
+                    return (sessionURI: uri, startOffset: 0, finishedFileId: nil)
+                } else if http.statusCode == 200 || http.statusCode == 201 {
+                    if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let id = json["id"] as? String {
+                        removeResumableSession(for: item.fileURL.path)
+                        return (sessionURI: uri, startOffset: item.sizeBytes, finishedFileId: id)
+                    }
+                }
+            }
+            removeResumableSession(for: item.fileURL.path)
+        }
+        
+        let newURI = try await initResumableSession(
+            filename: item.filename,
+            fileSize: item.sizeBytes,
+            mimeType: mimeType(for: item.fileURL.pathExtension),
+            parentFolderId: parentFolderId,
+            token: token
+        )
+        let record = ResumableSessionRecord(
+            filePath: item.fileURL.path,
+            fileSize: item.sizeBytes,
+            sessionURIString: newURI.absoluteString,
+            destinationFolderId: parentFolderId
+        )
+        saveResumableSession(record)
+        return (sessionURI: newURI, startOffset: 0, finishedFileId: nil)
+    }
+    
     // MARK: - 单文件分片上传 (Chunked Upload Engine)
     
     private func uploadSingleFile(
@@ -236,20 +353,22 @@ public final class UploadEngine: ObservableObject {
         grandTotalBytes: Int64,
         onProgress: (@Sendable (UploadProgressState) -> Void)?
     ) async throws -> String {
-        let sessionURI = try await initResumableSession(
-            filename: item.filename,
-            fileSize: item.sizeBytes,
-            mimeType: mimeType(for: item.fileURL.pathExtension),
+        let (sessionURI, initialOffset, completedId) = try await obtainSessionAndOffset(
+            item: item,
             parentFolderId: parentFolderId,
             token: token
         )
+        
+        if let fileId = completedId {
+            return fileId
+        }
         
         guard let handle = try? FileHandle(forReadingFrom: item.fileURL) else {
             throw UploadError.fileNotFound
         }
         defer { try? handle.close() }
         
-        var uploadedForThisFile: Int64 = 0
+        var uploadedForThisFile: Int64 = initialOffset
         let totalFileSize = item.sizeBytes
         
         while uploadedForThisFile < totalFileSize {
@@ -311,10 +430,12 @@ public final class UploadEngine: ObservableObject {
             onProgress?(state)
             
             if let fileId = resultId {
+                removeResumableSession(for: item.fileURL.path)
                 return fileId
             }
         }
         
+        removeResumableSession(for: item.fileURL.path)
         return ""
     }
     

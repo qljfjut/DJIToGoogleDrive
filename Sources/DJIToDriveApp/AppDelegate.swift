@@ -1,14 +1,15 @@
 // ====================================
-// 📁 文件职责：应用级生命周期管理、动态按需状态栏控制器与独立主窗口调度
-// 包含：NSStatusItem 动态显隐（插卡显示/拔卡隐藏）、NSPopover 呼出、桌面双击独立窗口唤起
+// 📁 文件职责：应用级生命周期管理、灵动动态图标微动画与独立主窗口调度
+// 包含：NSStatusItem 动态图标微交互（上传中相机/云箭头交替、就绪纯相机、完成对勾、未插卡隐身）、NSPopover 呼出、桌面双击独立大窗口唤起
 // 不包含：文件系统遍历与 Google Drive 传输细节
-// 依赖：AppKit, SwiftUI, UserNotifications, DeviceDetector
+// 依赖：AppKit, SwiftUI, UserNotifications, DeviceDetector, UploadEngine
 // ====================================
 
 import AppKit
 import SwiftUI
 import UserNotifications
 import DeviceDetector
+import UploadEngine
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -17,14 +18,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var mainWindow: NSWindow?
     private let detector = DeviceDetector()
 
+    // 状态栏图标动画状态机
+    private enum IconState {
+        case disconnected
+        case connectedIdle
+        case uploading
+        case completed
+    }
+    
+    private var currentIconState: IconState = .disconnected
+    private var animationTimer: Timer?
+    private var animationFrameToggle: Bool = false
+    private var revertToIdleTimer: Timer?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMainMenu()
         setupStatusItem()
         setupPopover()
         setupNotifications()
-        setupDeviceMonitoring()
+        setupDeviceAndUploadMonitoring()
         
-        // 首次启动响应：若有 DJI 设备接入则展开气泡，无设备则呼出独立窗口
+        // 首次启动响应：若有设备接入则展开气泡，无设备则呼出独立居中窗口
         if !detector.connectedDevices.isEmpty {
             showPopover()
         } else {
@@ -66,26 +80,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.mainMenu = mainMenu
     }
 
-    // MARK: - 状态栏按需智能显隐 (Dynamic Status Bar Item)
+    // MARK: - 灵动状态栏动态微动画 (Dynamic Micro-Animation State Machine)
 
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem?.button {
-            let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .medium)
-            if let image = NSImage(systemSymbolName: "camera.fill", accessibilityDescription: "DJIToDrive")?
-                .withSymbolConfiguration(config) {
-                button.image = image
-            }
-            button.title = " DJI"
+            button.title = "" // 纯粹极简，绝无文字干扰
+            button.image = makeSymbolImage(name: "camera.fill")
             button.action = #selector(togglePopover)
             button.target = self
         }
-        updateStatusItemVisibility()
     }
 
-    private func setupDeviceMonitoring() {
-        updateStatusItemVisibility()
+    private func setupDeviceAndUploadMonitoring() {
+        let hasDevices = !detector.connectedDevices.isEmpty
+        updateIconState(to: hasDevices ? .connectedIdle : .disconnected)
         
+        // 1. 监听设备物理插拔事件
         let workspaceCenter = NSWorkspace.shared.notificationCenter
         workspaceCenter.addObserver(
             forName: NSWorkspace.didMountNotification,
@@ -93,8 +104,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.detector.scanExistingVolumes()
-                self?.updateStatusItemVisibility()
+                guard let self = self else { return }
+                self.detector.scanExistingVolumes()
+                let connected = !self.detector.connectedDevices.isEmpty
+                if connected && self.currentIconState != .uploading {
+                    self.updateIconState(to: .connectedIdle)
+                }
             }
         }
         
@@ -104,21 +119,92 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.detector.scanExistingVolumes()
-                self?.updateStatusItemVisibility()
+                guard let self = self else { return }
+                self.detector.scanExistingVolumes()
+                let connected = !self.detector.connectedDevices.isEmpty
+                if !connected {
+                    self.updateIconState(to: .disconnected)
+                }
+            }
+        }
+        
+        // 2. 监听上传生命周期广播（就绪 / 上传中 / 已完成）
+        NotificationCenter.default.addObserver(
+            forName: .djiUploadLifecycleStateChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                let state = notification.userInfo?["state"] as? String
+                if state == "uploading" {
+                    self.updateIconState(to: .uploading)
+                } else if state == "completed" {
+                    self.updateIconState(to: .completed)
+                } else {
+                    let connected = !self.detector.connectedDevices.isEmpty
+                    self.updateIconState(to: connected ? .connectedIdle : .disconnected)
+                }
             }
         }
     }
 
-    /// 动态计算状态栏图标显隐：无设备时隐藏，有设备时浮现
-    private func updateStatusItemVisibility() {
-        let hasDevices = !detector.connectedDevices.isEmpty
-        statusItem?.isVisible = hasDevices
+    /// 核心图标状态机切换驱动
+    private func updateIconState(to newState: IconState) {
+        currentIconState = newState
+        animationTimer?.invalidate()
+        animationTimer = nil
+        revertToIdleTimer?.invalidate()
+        revertToIdleTimer = nil
         
-        // 若设备拔除且 popover 正在展开，自动收拢
-        if !hasDevices && popover?.isShown == true {
-            popover?.performClose(nil)
+        guard let button = statusItem?.button else { return }
+        button.title = "" // 保持纯净无文字
+        
+        switch newState {
+        case .disconnected:
+            statusItem?.isVisible = false
+            if popover?.isShown == true {
+                popover?.performClose(nil)
+            }
+            
+        case .connectedIdle:
+            statusItem?.isVisible = true
+            button.image = makeSymbolImage(name: "camera.fill")
+            
+        case .uploading:
+            statusItem?.isVisible = true
+            animationFrameToggle = false
+            button.image = makeSymbolImage(name: "arrow.up.circle.fill")
+            
+            // 启动 1.2 秒交替微动画：相机 <-> 上传云箭头
+            animationTimer = Timer.scheduledTimer(withTimeInterval: 1.2, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self = self, self.currentIconState == .uploading, let btn = self.statusItem?.button else { return }
+                    self.animationFrameToggle.toggle()
+                    let symbolName = self.animationFrameToggle ? "camera.fill" : "arrow.up.circle.fill"
+                    btn.image = self.makeSymbolImage(name: symbolName)
+                }
+            }
+            
+        case .completed:
+            statusItem?.isVisible = true
+            button.image = makeSymbolImage(name: "checkmark.circle.fill")
+            
+            // 8 秒后平滑回归待命相机状态
+            revertToIdleTimer = Timer.scheduledTimer(withTimeInterval: 8.0, repeats: false) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self = self, self.currentIconState == .completed else { return }
+                    let connected = !self.detector.connectedDevices.isEmpty
+                    self.updateIconState(to: connected ? .connectedIdle : .disconnected)
+                }
+            }
         }
+    }
+
+    private func makeSymbolImage(name: String) -> NSImage? {
+        let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
+        return NSImage(systemSymbolName: name, accessibilityDescription: "DJIToDrive")?
+            .withSymbolConfiguration(config)
     }
 
     // MARK: - 弹出面板与独立窗口 (Popover & Window Management)
@@ -186,7 +272,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // 清理资源
+        animationTimer?.invalidate()
+        revertToIdleTimer?.invalidate()
     }
 }
 
