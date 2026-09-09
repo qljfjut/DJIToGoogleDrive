@@ -42,3 +42,6 @@ client_secret*.json
 .idea/
 *.swp
 *~
+
+# 独立导出发布专区
+DJIToDrive_Clean_Export/
