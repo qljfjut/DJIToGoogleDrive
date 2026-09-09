@@ -4,6 +4,21 @@
 
 ---
 
+### 📅 [2026-09-09 15:35] GitHub 远程仓库关联与开源门面 README.md / MIT License 建立
+- **操作类型**：`[新增]` / `[文档]`
+- **涉及文件**：
+  - `README.md`（新增，开源项目精美门面文档、架构解耦图解与快速上手指南）
+  - `LICENSE`（新增，标准开源 MIT License）
+  - Git Remote（配置 `origin` 为 `https://github.com/qljfjut/DJIToGoogleDrive.git`）
+- **改动背景与原理**：
+  - 用户计划将项目托管到个人 GitHub 仓库 `qljfjut/DJIToGoogleDrive`；
+  - 建立标准开源规范，展示双存储感知、16MB Chunk 断点续传、系统防休眠与息屏节能、伴随缓存清理等硬核技术特征；
+  - 关联 GitHub 远程库，为后续持续集成与版本发布建立通道。
+- **验证结果**：
+  - `README.md` 与 `LICENSE` 提交归档；
+  - `git remote -v` 验证 `origin` 指向 `https://github.com/qljfjut/DJIToGoogleDrive.git` 就绪。
+---
+
 ### 📅 [2026-09-09 15:28] 系统级防休眠断言管理与屏幕熄灭节能保障 (Sleep Assertion & Display Sleep)
 - **操作类型**：`[新增]` / `[优化]`
 - **涉及文件**：
