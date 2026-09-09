@@ -93,7 +93,7 @@ struct MenuBarView: View {
     }
 
     var body: some View {
-        VStack(spacing: 11) {
+        VStack(spacing: 8) {
             headerSection
             Divider()
             dualStorageSection
@@ -107,8 +107,10 @@ struct MenuBarView: View {
             Divider()
             footerSection
         }
-        .padding(13)
-        .frame(width: 440, height: 600)
+        .padding(.top, 20)
+        .padding(.horizontal, 14)
+        .padding(.bottom, 12)
+        .frame(width: 440, height: 645)
         .task { await scanAllConnectedVolumes() }
         .onChange(of: detector.connectedDevices) { _ in
             Task { await scanAllConnectedVolumes() }

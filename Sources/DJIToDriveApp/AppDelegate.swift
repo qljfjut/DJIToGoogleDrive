@@ -94,6 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupDeviceAndUploadMonitoring() {
+        detector.scanExistingVolumes()
         let hasDevices = !detector.connectedDevices.isEmpty
         updateIconState(to: hasDevices ? .connectedIdle : .disconnected)
         
@@ -150,7 +151,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// 核心图标状态机切换驱动
+    /// 核心图标状态机切换驱动（永久在线常驻，绝不隐形）
     private func updateIconState(to newState: IconState) {
         currentIconState = newState
         animationTimer?.invalidate()
@@ -160,20 +161,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         
         guard let button = statusItem?.button else { return }
         button.title = "" // 保持纯净无文字
+        statusItem?.isVisible = true // 状态栏图标永久常驻可见
         
         switch newState {
         case .disconnected:
-            statusItem?.isVisible = false
-            if popover?.isShown == true {
-                popover?.performClose(nil)
-            }
+            button.image = makeSymbolImage(name: "camera")
             
         case .connectedIdle:
-            statusItem?.isVisible = true
             button.image = makeSymbolImage(name: "camera.fill")
             
         case .uploading:
-            statusItem?.isVisible = true
             animationFrameToggle = false
             button.image = makeSymbolImage(name: "arrow.up.circle.fill")
             
@@ -188,10 +185,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             
         case .completed:
-            statusItem?.isVisible = true
             button.image = makeSymbolImage(name: "checkmark.circle.fill")
             
-            // 8 秒后平滑回归待命相机状态
+            // 8 秒后平滑回归待命状态
             revertToIdleTimer = Timer.scheduledTimer(withTimeInterval: 8.0, repeats: false) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     guard let self = self, self.currentIconState == .completed else { return }
@@ -223,7 +219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupPopover() {
         let popover = NSPopover()
-        popover.contentSize = NSSize(width: 440, height: 600)
+        popover.contentSize = NSSize(width: 440, height: 645)
         popover.behavior = .transient
         popover.animates = true
         popover.contentViewController = NSHostingController(rootView: MenuBarView())
@@ -260,7 +256,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 440, height: 600),
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 645),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
