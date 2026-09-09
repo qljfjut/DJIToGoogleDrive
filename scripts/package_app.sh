@@ -80,4 +80,4 @@ xattr -cr "$DESKTOP_DIR/$APP_NAME.app"
 codesign --force --deep --sign - "$DESKTOP_DIR/$APP_NAME.app"
 touch "$DESKTOP_DIR/$APP_NAME.app"
 
-echo "🎉 打包完成！您可以在桌面上直接双击打开【$APP_NAME.app】，启动后将自动弹出控制台！"
+echo "🎉 打包完成！【$APP_NAME.app】已静默部署至桌面，静默常驻右上角菜单栏！"

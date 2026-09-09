@@ -32,7 +32,7 @@
 ---
 
 ## 4. 🧠 业务模型与核心映射表 (Business Models & Mappings)
-- **白名单后缀**：`.mp4`, `.mov`, `.dng`, `.jpg`, `.jpeg`, `.wav`, `.srt`
+- **白名单后缀**：`.mp4`, `.mov`, `.dng`, `.jpg`, `.jpeg`, `.wav`, `.srt`, `.osv`（DJI 360 全景相机专属视频格式）
 - **黑名单后缀**：`.lrf`, `.thm`, `._*`, `.DS_Store`, `.Trashes`
 - **云端目标路径生成公式**：
   `DJI_Media/{YYYY-MM-DD}/{OriginalFileName}`
@@ -47,16 +47,13 @@
 DJIToDrive/
 ├── Package.swift               # SPM 官方工程包定义
 ├── Sources/
-│   ├── DJIToDriveApp/         # MenuBar 主入口与 UI 生命周期
-│   ├── DeviceDetector/        # 卷盘挂载监听与设备特征比对
-│   ├── MediaScanner/          # DCIM 目录遍历与文件白黑名单过滤
-│   ├── UploadEngine/          # URLSession 分片断点续传器与会话管理
-│   ├── AuthManager/           # Google OAuth 2.0 PKCE 鉴权与 Keychain
-│   └── Ledger/                # 本地 SHA-256 去重账本 (JSON/SQLite)
-└── Tests/
-    ├── DeviceDetectorTests/   # 设备特征识别单元测试
-    ├── MediaScannerTests/     # 过滤逻辑单元测试
-    └── UploadEngineTests/     # 分片计算与 Mock 传输测试
+│   ├── DJIToDriveApp/         # MenuBar 主入口与 UI 生命周期 (静默常驻 + 系统横幅通知)
+│   ├── DeviceDetector/        # 卷盘挂载监听、双卷盘智能感知与媒体容量择优锁定
+│   ├── MediaScanner/          # DCIM 目录遍历与文件白黑名单过滤 (.OSV 支持)
+│   ├── UploadEngine/          # 16MB 分片断点续传器与会话管理
+│   ├── AuthManager/           # 双轨凭据持久化 (0600 本地锁死 + Keychain) 与 RFC 3986 自动续期
+│   └── Ledger/                # 本地 SHA-256 去重账本 (JSON)
+└── Tests/                     # 单元测试模块
 ```
 
 ---
@@ -64,9 +61,10 @@ DJIToDrive/
 ## 6. 🚦 当前进度与优先级路线图 (Progress & Roadmap)
 - `[已完成]` Day-0 规划文档与创世五件套初始化；
 - `[已完成]` P1 阶段：初始化 SPM 官方工程包，构建 MenuBar 原生骨架，设计专属 Retina 图标并解决代码签名与桌面发布；
-- `[已完成]` P2 阶段：实现 `DeviceDetector` 物理卷盘热插拔感知与 `MediaScanner` 白黑名单过滤引擎（保留 `.WAV`/`.SRT`，过滤 `.LRF`）；
-- `[已完成]` P3 阶段：实现 `AuthManager`（OAuth 2.0 PKCE + Keychain 凭证安全托管）与 `UploadEngine`（16MB Chunk 断点续传 + 首尾 4MB 去重账本）；
-- `[P4 待办]` 接入真实 Google Drive 凭据联调测试，进行模拟大文件上云实测并制作正式发布版 DMG 安装包。
+- `[已完成]` P2 阶段：实现 `DeviceDetector` 物理卷盘热插拔感知（支持双挂载卷盘智能优先识别）与 `MediaScanner` 白黑名单过滤引擎（适配 `.OSV`、保留 `.WAV`/`.SRT`，过滤 `.LRF`）；
+- `[已完成]` P3 阶段：实现 `UploadEngine`（16MB Chunk 断点续传 + 首尾 4MB 去重账本）；
+- `[已完成]` P4 阶段：彻底静默化改造（移除所有抢焦点弹窗、双轨持久化永不掉登录、插卡全自动后台增量上云 + 系统横幅通知）；
+- `[当前状态]` 桌面应用已部署并静默运行中，等待用户在 Google Cloud Console 确保开启 Google Drive API 服务，完成单次终生免维护授权后全自动托管。
 
 ---
 

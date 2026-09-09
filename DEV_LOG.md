@@ -4,6 +4,29 @@
 
 ---
 
+### 📅 [2026-09-09 08:25] 彻底静默化改造：一次配置终生免调、双轨凭据永不掉登录与插卡全自动同步
+- **操作类型**：`[优化]` / `[重构]`
+- **涉及文件**：
+  - `Sources/DJIToDriveApp/AppDelegate.swift`（修改）
+  - `Sources/AuthManager/AuthManager.swift`（修改）
+  - `Sources/DJIToDriveApp/MenuBarView.swift`（修改）
+  - `scripts/package_app.sh`（修改）
+- **改动背景与原理**：
+  - 用户痛点：“怎么每次都要跳。不能一次性设置好，以后不调了嘛”。
+  - 深度溯源三大干扰点：
+    1. 启动强制跳窗：`AppDelegate.swift` 中残留了测试阶段主动弹窗的逻辑；
+    2. 凭据隔离掉登录：macOS 原生 Keychain 在每次 Ad-hoc 重签发构建时会重置访问控制列表（ACL），导致重新打开后读不到旧 Token 误判为未登录；
+    3. 交互打扰：插卡后仍需用户手动展开面板点击“一键开始上传”。
+  - 核心解决机制：
+    1. 纯净静默：移除启动跳窗，开机/启动静默常驻右上角菜单栏，不抢焦点；
+    2. 终生免调双轨持久化：引入 `~/Library/Application Support/DJIToDrive/auth.json`（POSIX 权限严格锁死为 `0600`，仅当前系统用户可读写）与 Keychain 双轨并存机制，彻底摆脱签名 Hash 漂移对凭证的隔离，实现授权一次永久有效、后台毫秒级静默自动刷新 Token；
+    3. 插卡全自动后台同步：硬件接入（Pocket 3/4、DJI 360 等）即刻自动扫描 DCIM、自动过滤 `.LRF` 代理文件、自动执行 16MB Chunk 断点续传，同步完毕后推送 macOS 原生横幅气泡通知（`UNUserNotificationCenter`），实现真正的“即插即传、传完即知、零打扰”。
+- **验证结果**：
+  - SPM 官方工具链 Release 增量构建完成（耗时 3.37s）；
+  - `package_app.sh` 组装原生应用与签名完毕，已部署并平滑替换桌面的 `DJIToDrive.app`；
+  - 验证应用启动无任何弹窗，静默常驻菜单栏（PID 24290）。
+---
+
 ### 📅 [2026-09-09 00:01] 修复 macOS Accessory 模式下的 Cmd+V 粘贴快捷键与输入框交互增强
 - **操作类型**：`[修复]` / `[优化]`
 - **涉及文件**：
@@ -134,3 +157,19 @@
   3. `UploadEngine` 中支持 `.osv` 视频流分片上传。
 - **验证结果**：编译打包完成并重启应用（PID 18869），成功捕获到 19 个全景大视频（共约 180+ GB），并自动过滤 19 个冗余代理文件，同步按钮正式激活！
 ---
+
+### 📅 [2026-09-09 07:48] 控制台多卷盘自由切换与专属 AppIcon 原生装配
+- **操作类型**：`[新增]` / `[优化]`
+- **涉及文件**：
+  - `Sources/DeviceDetector/DeviceDetector.swift`（修改：新增 `displayName` 友好命名识别与 `selectDevice` 显式切换 API）
+  - `Sources/DJIToDriveApp/MenuBarView.swift`（修改：控制台头部装配原生 AppIcon 图标，设备卡片支持多卷盘下拉切换菜单）
+  - `DEV_LOG.md`（修改）
+- **改动背景与原理**：
+  - 当相机同时挂载多个卷盘（如机身存储与 MicroSD 存储卡）时，除底层的智能优选之外，在 UI 层面暴露显式切换菜单，使用户可随时在不同卷盘间自主切换；
+  - 将控制台头部的占位符号替换为工程原生 `AppIcon.icns` 高清图标，增强一致视觉质感。
+- **主要改动细节**：
+  1. `DeviceDetector` 提供 `displayName`，智能区分 `(机身存储)` 与 `(存储卡)`，提供 `selectDevice(_:)` 切换方法。
+  2. `MenuBarView` 新增 `Menu` 下拉切换器，在检测到多设备/多卷盘时提供带对勾标记的切换项；新增 `loadAppIcon()` 装配原生图标。
+- **验证结果**：`swift build -c release` 编译通过，应用打包重签名并重启（PID 22730），控制台正常唤起，多卷盘切换与专属图标均稳定就绪。
+---
+

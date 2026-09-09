@@ -24,6 +24,7 @@ struct MenuBarView: View {
     
     // 独立设置窗口引用
     @State private var settingsWindow: NSWindow?
+    @State private var lastAutoSyncedDeviceId: String?
 
     private var hasActiveDevice: Bool {
         detector.activeDevice != nil
@@ -45,16 +46,32 @@ struct MenuBarView: View {
         .frame(width: 360, height: 430)
         .task(id: detector.activeDevice?.id) {
             await triggerMediaScan()
+            if let dev = detector.activeDevice,
+               dev.id != lastAutoSyncedDeviceId,
+               authManager.isAuthenticated,
+               !uploadEngine.isUploading,
+               !scanResult.items.isEmpty {
+                lastAutoSyncedDeviceId = dev.id
+                handleSyncOrAuthAction(isAuto: true)
+            }
         }
     }
 
     // MARK: - 子视图拆分 (Subviews)
 
     private var headerSection: some View {
-        HStack {
-            Image(systemName: "video.badge.waveform.fill")
-                .foregroundColor(.accentColor)
-                .font(.title3)
+        HStack(spacing: 10) {
+            if let logoImage = loadAppIcon() {
+                Image(nsImage: logoImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 30, height: 30)
+                    .cornerRadius(6)
+            } else {
+                Image(systemName: "video.badge.waveform.fill")
+                    .foregroundColor(.accentColor)
+                    .font(.title3)
+            }
             VStack(alignment: .leading, spacing: 2) {
                 Text("DJIToDrive")
                     .font(.headline)
@@ -72,6 +89,14 @@ struct MenuBarView: View {
                 .foregroundColor(.secondary)
         }
     }
+    
+    private func loadAppIcon() -> NSImage? {
+        if let path = Bundle.main.path(forResource: "AppIcon", ofType: "icns"),
+           let img = NSImage(contentsOfFile: path) {
+            return img
+        }
+        return NSImage(named: NSImage.applicationIconName)
+    }
 
     private var deviceStatusSection: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -81,10 +106,10 @@ struct MenuBarView: View {
                     .font(.title2)
                     .frame(width: 28)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(detector.activeDevice?.deviceType.rawValue ?? "未检测到 DJI 设备")
+                    Text(detector.activeDevice?.displayName ?? "未检测到 DJI 设备")
                         .font(.subheadline)
                         .fontWeight(.semibold)
-                    Text(detector.activeDevice?.volumeName ?? "请插入 Pocket 3 / 4、360 全景相机或插卡")
+                    Text(detector.activeDevice?.volumeURL.path ?? "请插入 Pocket 3 / 4、360 全景相机或插卡")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                         .lineLimit(1)
@@ -93,6 +118,26 @@ struct MenuBarView: View {
                 if isScanning {
                     ProgressView()
                         .scaleEffect(0.7)
+                } else if detector.connectedDevices.count > 1 {
+                    Menu {
+                        ForEach(detector.connectedDevices) { dev in
+                            Button {
+                                detector.selectDevice(dev)
+                            } label: {
+                                if dev.id == detector.activeDevice?.id {
+                                    Label(dev.displayName, systemImage: "checkmark")
+                                } else {
+                                    Text(dev.displayName)
+                                }
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
                 }
             }
             .padding(10)
@@ -169,7 +214,7 @@ struct MenuBarView: View {
 
     private var actionButtonGroup: some View {
         VStack(spacing: 8) {
-            Button(action: handleSyncOrAuthAction) {
+            Button(action: { handleSyncOrAuthAction(isAuto: false) }) {
                 HStack {
                     Image(systemName: uploadEngine.isUploading ? "arrow.triangle.2.circlepath" : (authManager.isAuthenticated ? "icloud.and.arrow.up.fill" : "key.fill"))
                     Text(syncButtonTitle)
@@ -238,24 +283,40 @@ struct MenuBarView: View {
         }
     }
 
-    private func handleSyncOrAuthAction() {
+    private func handleSyncOrAuthAction(isAuto: Bool = false) {
         if !authManager.isAuthenticated {
-            openPreferences()
+            if !isAuto {
+                openPreferences()
+            }
             return
         }
         
+        guard !scanResult.items.isEmpty, !uploadEngine.isUploading else { return }
+        
         uploadErrorMessage = nil
         uploadSuccessMessage = nil
+        
+        let itemCount = scanResult.items.count
+        let totalSizeStr = formattedBytes(scanResult.totalSizeBytes)
+        let deviceName = detector.activeDevice?.displayName ?? "DJI 设备"
         
         Task {
             do {
                 try await uploadEngine.uploadItems(scanResult.items)
                 await MainActor.run {
                     self.uploadSuccessMessage = "🎉 全量素材已成功同步到 Google Drive (DJI_Media 目录)！"
+                    AppDelegate.sendNotification(
+                        title: "DJIToDrive 素材同步完成",
+                        body: "来自 \(deviceName) 的 \(itemCount) 个素材 (\(totalSizeStr)) 已成功同步至 Google Drive！"
+                    )
                 }
             } catch {
                 await MainActor.run {
                     self.uploadErrorMessage = "上传失败: \(error.localizedDescription)"
+                    AppDelegate.sendNotification(
+                        title: "DJIToDrive 同步未完成",
+                        body: "同步遇到问题: \(error.localizedDescription)"
+                    )
                 }
             }
         }

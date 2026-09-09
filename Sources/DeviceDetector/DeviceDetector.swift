@@ -24,6 +24,16 @@ public struct ConnectedDevice: Identifiable, Sendable, Equatable {
     public let volumeURL: URL
     public let dcimURL: URL
     
+    public var displayName: String {
+        let upper = volumeName.uppercased()
+        if upper.contains("SD") || upper.contains("CARD") {
+            return "\(deviceType.rawValue) (存储卡)"
+        } else if upper.contains("OSMO") || upper.contains("360") {
+            return "\(deviceType.rawValue) (机身存储)"
+        }
+        return "\(deviceType.rawValue) (\(volumeName))"
+    }
+    
     public init(volumeName: String, deviceType: DJIDeviceType, volumeURL: URL, dcimURL: URL) {
         self.volumeName = volumeName
         self.deviceType = deviceType
@@ -146,6 +156,13 @@ public final class DeviceDetector: ObservableObject {
         connectedDevices.removeAll { $0.volumeURL.path == url.path }
         if activeDevice?.volumeURL.path == url.path {
             activeDevice = connectedDevices.first
+        }
+    }
+    
+    /// 供外部显式切换当前活动卷盘
+    public func selectDevice(_ device: ConnectedDevice) {
+        if connectedDevices.contains(where: { $0.id == device.id }) {
+            self.activeDevice = device
         }
     }
     

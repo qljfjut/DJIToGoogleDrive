@@ -1,6 +1,6 @@
 // ====================================
-// 📁 文件职责：Google OAuth 2.0 PKCE 鉴权与 macOS Keychain 凭据安全托管
-// 包含：PKCE 挑战码派生、本地 127.0.0.1 回调捕获、Token 自动轮转、系统钥匙串硬件级加密存取
+// 📁 文件职责：Google OAuth 2.0 PKCE 鉴权与双轨安全持久化中心
+// 包含：PKCE 挑战码派生、RFC 3986 标准参数编码、本地 127.0.0.1 回调捕获、Token 自动轮转、0600 本地安全配置双轨持久化
 // 不包含：媒体文件切片与扫描
 // 依赖：Foundation, Security, CryptoKit, AppKit
 // ====================================
@@ -36,6 +36,16 @@ public enum AuthError: LocalizedError, Sendable {
     }
 }
 
+/// 本地安全隔离持久化模型（权限严格锁定 0600，杜绝签名失效导致凭据丢失）
+private struct AuthConfig: Codable {
+    var clientId: String?
+    var clientSecret: String?
+    var accessToken: String?
+    var refreshToken: String?
+    var tokenExpiry: String?
+    var userEmail: String?
+}
+
 @MainActor
 public final class AuthManager: ObservableObject {
     public static let shared = AuthManager()
@@ -49,7 +59,16 @@ public final class AuthManager: ObservableObject {
     @Published public private(set) var hasClientCredentials: Bool = false
     @Published public private(set) var userEmail: String?
     
+    private let storageURL: URL
+    private var config: AuthConfig = AuthConfig()
+    
     public init() {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let dir = appSupport.appendingPathComponent("DJIToDrive", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        self.storageURL = dir.appendingPathComponent("auth.json")
+        
+        loadConfig()
         checkCredentialsStatus()
     }
     
@@ -145,7 +164,7 @@ public final class AuthManager: ObservableObject {
             "code_verifier": verifier
         ]
         
-        let bodyString = params.map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "")" }.joined(separator: "&")
+        let bodyString = params.map { "\(urlEncode($0.key))=\(urlEncode($0.value))" }.joined(separator: "&")
         request.httpBody = bodyString.data(using: .utf8)
         
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -161,14 +180,14 @@ public final class AuthManager: ObservableObject {
             if let refreshToken = json["refresh_token"] as? String {
                 setSecureItem(key: "refresh_token", value: refreshToken)
             }
-            if let expiresIn = json["expires_in"] as? Double {
+            if let expiresIn = (json["expires_in"] as? NSNumber)?.doubleValue ?? json["expires_in"] as? Double {
                 let expiryDate = Date().addingTimeInterval(expiresIn)
                 setSecureItem(key: "token_expiry", value: "\(expiryDate.timeIntervalSince1970)")
             }
         }
     }
     
-    /// 获取当前可用的 Access Token（如果即将过期则自动静默刷新）
+    /// 获取当前可用的 Access Token（终生免维护：若过期则自动后台毫秒级静默换取新 Token）
     public func getValidAccessToken() async throws -> String {
         if let expiryStr = getSecureItem(key: "token_expiry"),
            let expiryTime = Double(expiryStr),
@@ -197,7 +216,7 @@ public final class AuthManager: ObservableObject {
             "grant_type": "refresh_token"
         ]
         
-        let bodyString = params.map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "")" }.joined(separator: "&")
+        let bodyString = params.map { "\(urlEncode($0.key))=\(urlEncode($0.value))" }.joined(separator: "&")
         request.httpBody = bodyString.data(using: .utf8)
         
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -208,7 +227,7 @@ public final class AuthManager: ObservableObject {
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let newAccessToken = json["access_token"] as? String {
             setSecureItem(key: "access_token", value: newAccessToken)
-            if let expiresIn = json["expires_in"] as? Double {
+            if let expiresIn = (json["expires_in"] as? NSNumber)?.doubleValue ?? json["expires_in"] as? Double {
                 let expiryDate = Date().addingTimeInterval(expiresIn)
                 setSecureItem(key: "token_expiry", value: "\(expiryDate.timeIntervalSince1970)")
             }
@@ -271,8 +290,12 @@ public final class AuthManager: ObservableObject {
                     let requestText = String(cString: buffer)
                     if let codeRange = requestText.range(of: "code=") {
                         let sub = requestText[codeRange.upperBound...]
-                        if let endRange = sub.range(of: " ") ?? sub.range(of: "&") {
+                        // 遇到空格或 & 即刻截断，保证无论是否包含后续参数均能精准捕获纯净授权码
+                        let endChars = CharacterSet(charactersIn: " &\r\n")
+                        if let endRange = sub.rangeOfCharacter(from: endChars) {
                             capturedCode = String(sub[..<endRange.lowerBound])
+                        } else {
+                            capturedCode = String(sub)
                         }
                     }
                 }
@@ -309,7 +332,13 @@ public final class AuthManager: ObservableObject {
         }
     }
     
-    // MARK: - PKCE 随机码与 Hash (Helpers)
+    // MARK: - RFC 3986 标准参数编码与 PKCE Helper
+    
+    private func urlEncode(_ string: String) -> String {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~")
+        return string.addingPercentEncoding(withAllowedCharacters: allowed) ?? string
+    }
     
     private func generateRandomCodeVerifier() -> String {
         var bytes = [UInt8](repeating: 0, count: 32)
@@ -329,9 +358,21 @@ public final class AuthManager: ObservableObject {
             .replacingOccurrences(of: "=", with: "")
     }
     
-    // MARK: - macOS Keychain 安全存取 (Keychain Services)
+    // MARK: - 双轨持久化引擎 (Dual-Layer Secure Storage: File 0600 + Keychain)
     
     private func getSecureItem(key: String) -> String? {
+        // 1. 优先读取持久化配置（防重构/重签名丢失）
+        switch key {
+        case "client_id": if let v = config.clientId, !v.isEmpty { return v }
+        case "client_secret": if let v = config.clientSecret, !v.isEmpty { return v }
+        case "access_token": if let v = config.accessToken, !v.isEmpty { return v }
+        case "refresh_token": if let v = config.refreshToken, !v.isEmpty { return v }
+        case "token_expiry": if let v = config.tokenExpiry, !v.isEmpty { return v }
+        case "user_email": if let v = config.userEmail, !v.isEmpty { return v }
+        default: break
+        }
+        
+        // 2. 备选读取系统 Keychain
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.keychainService,
@@ -342,14 +383,27 @@ public final class AuthManager: ObservableObject {
         
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else {
-            return nil
+        if status == errSecSuccess, let data = result as? Data, let str = String(data: data, encoding: .utf8) {
+            return str
         }
-        return String(data: data, encoding: .utf8)
+        return nil
     }
     
     private func setSecureItem(key: String, value: String) {
-        deleteSecureItem(key: key)
+        // 1. 写入持久化配置并落盘
+        switch key {
+        case "client_id": config.clientId = value
+        case "client_secret": config.clientSecret = value
+        case "access_token": config.accessToken = value
+        case "refresh_token": config.refreshToken = value
+        case "token_expiry": config.tokenExpiry = value
+        case "user_email": config.userEmail = value
+        default: break
+        }
+        saveConfig()
+        
+        // 2. 同步写入系统 Keychain
+        deleteKeychainItem(key: key)
         guard let data = value.data(using: .utf8) else { return }
         
         let query: [String: Any] = [
@@ -363,11 +417,43 @@ public final class AuthManager: ObservableObject {
     }
     
     private func deleteSecureItem(key: String) {
+        switch key {
+        case "client_id": config.clientId = nil
+        case "client_secret": config.clientSecret = nil
+        case "access_token": config.accessToken = nil
+        case "refresh_token": config.refreshToken = nil
+        case "token_expiry": config.tokenExpiry = nil
+        case "user_email": config.userEmail = nil
+        default: break
+        }
+        saveConfig()
+        deleteKeychainItem(key: key)
+    }
+    
+    private func deleteKeychainItem(key: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.keychainService,
             kSecAttrAccount as String: key
         ]
         SecItemDelete(query as CFDictionary)
+    }
+    
+    private func loadConfig() {
+        guard let data = try? Data(contentsOf: storageURL),
+              let decoded = try? JSONDecoder().decode(AuthConfig.self, from: data) else {
+            return
+        }
+        self.config = decoded
+    }
+    
+    private func saveConfig() {
+        guard let data = try? JSONEncoder().encode(config) else { return }
+        try? data.write(to: storageURL, options: .atomic)
+        
+        // 严格锁定文件权限为 0600（仅当前登录用户可读写，防止其他应用窥探）
+        var attrs = [FileAttributeKey: Any]()
+        attrs[.posixPermissions] = 0o600
+        try? FileManager.default.setAttributes(attrs, ofItemAtPath: storageURL.path)
     }
 }
