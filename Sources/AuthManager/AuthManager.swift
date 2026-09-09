@@ -44,13 +44,16 @@ private struct AuthConfig: Codable {
     var refreshToken: String?
     var tokenExpiry: String?
     var userEmail: String?
+    var targetFolder: String?
+    var createDateSubfolder: Bool?
+    var minVideoSizeMB: Int?
 }
 
 @MainActor
 public final class AuthManager: ObservableObject {
     public static let shared = AuthManager()
     
-    private static let redirectPort: UInt16 = 8085
+    nonisolated private static let redirectPort: UInt16 = 8085
     private static let redirectURI = "http://127.0.0.1:8085/oauth/callback"
     private static let scope = "https://www.googleapis.com/auth/drive.file"
     
@@ -105,6 +108,38 @@ public final class AuthManager: ObservableObject {
         deleteSecureItem(key: "token_expiry")
         deleteSecureItem(key: "user_email")
         checkCredentialsStatus()
+    }
+    
+    // MARK: - 云端目标目录与过滤规则配置
+    
+    public func getTargetFolder() -> String {
+        guard let folder = config.targetFolder?.trimmingCharacters(in: .whitespacesAndNewlines), !folder.isEmpty else {
+            return "DJI_Media"
+        }
+        return folder
+    }
+    
+    public func setTargetFolder(_ folder: String) {
+        config.targetFolder = folder.trimmingCharacters(in: .whitespacesAndNewlines)
+        saveConfig()
+    }
+    
+    public func getCreateDateSubfolder() -> Bool {
+        config.createDateSubfolder ?? true
+    }
+    
+    public func setCreateDateSubfolder(_ enabled: Bool) {
+        config.createDateSubfolder = enabled
+        saveConfig()
+    }
+    
+    public func getMinVideoSizeMB() -> Int {
+        config.minVideoSizeMB ?? 10
+    }
+    
+    public func setMinVideoSizeMB(_ mb: Int) {
+        config.minVideoSizeMB = max(1, mb)
+        saveConfig()
     }
     
     // MARK: - PKCE 授权启动流水线 (OAuth 2.0 PKCE Flow)

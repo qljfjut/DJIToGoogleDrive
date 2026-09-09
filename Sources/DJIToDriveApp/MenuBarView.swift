@@ -1,8 +1,8 @@
 // ====================================
 // 📁 文件职责：菜单栏快捷控制面板 SwiftUI 视图与设备感知/上传引擎状态绑定
-// 包含：硬件热插拔实时响应、媒体资产扫描与过滤汇总、Google Drive 分片上传触发与进度反馈
-// 不包含：底层的 POSIX 监听与 Keychain 底层 API
-// 依赖：SwiftUI, AppKit, DeviceDetector, MediaScanner, AuthManager, UploadEngine
+// 包含：双存储空间上下堆叠卡片展示、媒体素材多选/排除废片/全选工具栏、Google Drive 16MB Chunk 上传仪表盘与实时网速/ETA、严格手动触发同步
+// 不包含：底层的 POSIX 硬件事件捕获与云端 HTTP 分片细节
+// 依赖：SwiftUI, AppKit, DeviceDetector, MediaScanner, AuthManager, UploadEngine, Ledger
 // ====================================
 
 import SwiftUI
@@ -10,313 +10,481 @@ import DeviceDetector
 import MediaScanner
 import AuthManager
 import UploadEngine
+import Ledger
 
 struct MenuBarView: View {
     @StateObject private var detector = DeviceDetector()
     @ObservedObject private var authManager = AuthManager.shared
     @StateObject private var uploadEngine = UploadEngine()
     private let scanner = MediaScanner()
+    private let ledger = Ledger()
     
-    @State private var scanResult: ScanResult = .empty
+    // 双卷盘各自的扫描结果字典 (DeviceID -> ScanResult)
+    @State private var volumeScanResults: [String: ScanResult] = [:]
     @State private var isScanning: Bool = false
+    
+    // 用户勾选的媒体素材路径集合 (fileURL.path) 与已入账本集合
+    @State private var selectedItemIds: Set<String> = []
+    @State private var uploadedItemIds: Set<String> = []
+    
     @State private var uploadErrorMessage: String?
     @State private var uploadSuccessMessage: String?
-    
-    // 独立设置窗口引用
     @State private var settingsWindow: NSWindow?
-    @State private var lastAutoSyncedDeviceId: String?
 
-    private var hasActiveDevice: Bool {
-        detector.activeDevice != nil
+    // MARK: - 聚合计算属性
+
+    private var hasActiveDevice: Bool { !detector.connectedDevices.isEmpty }
+
+    private var allScannedItems: [ScannedMediaItem] {
+        detector.connectedDevices.flatMap { volumeScanResults[$0.id]?.items ?? [] }
+    }
+
+    private var selectedItems: [ScannedMediaItem] {
+        allScannedItems.filter { selectedItemIds.contains($0.id) }
+    }
+
+    private var selectedTotalBytes: Int64 {
+        selectedItems.reduce(0) { $0 + $1.sizeBytes }
     }
 
     var body: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 11) {
             headerSection
             Divider()
-            deviceStatusSection
+            dualStorageSection
             Divider()
-            syncSummarySection
-            Spacer(minLength: 8)
+            mediaSelectionToolbar
+            mediaChecklistSection
+            Divider()
+            metricsDashboardSection
+            Spacer(minLength: 2)
             actionButtonGroup
             Divider()
             footerSection
         }
-        .padding(14)
-        .frame(width: 360, height: 430)
-        .task(id: detector.activeDevice?.id) {
-            await triggerMediaScan()
-            if let dev = detector.activeDevice,
-               dev.id != lastAutoSyncedDeviceId,
-               authManager.isAuthenticated,
-               !uploadEngine.isUploading,
-               !scanResult.items.isEmpty {
-                lastAutoSyncedDeviceId = dev.id
-                handleSyncOrAuthAction(isAuto: true)
-            }
+        .padding(13)
+        .frame(width: 440, height: 600)
+        .task { await scanAllConnectedVolumes() }
+        .onChange(of: detector.connectedDevices) { _ in
+            Task { await scanAllConnectedVolumes() }
         }
     }
 
-    // MARK: - 子视图拆分 (Subviews)
+    // MARK: - 1. 顶部状态栏
 
     private var headerSection: some View {
         HStack(spacing: 10) {
             if let logoImage = loadAppIcon() {
                 Image(nsImage: logoImage)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 30, height: 30)
-                    .cornerRadius(6)
+                    .resizable().aspectRatio(contentMode: .fit)
+                    .frame(width: 28, height: 28).cornerRadius(6)
             } else {
                 Image(systemName: "video.badge.waveform.fill")
-                    .foregroundColor(.accentColor)
-                    .font(.title3)
+                    .foregroundColor(.accentColor).font(.title3)
             }
             VStack(alignment: .leading, spacing: 2) {
-                Text("DJIToDrive")
-                    .font(.headline)
-                    .fontWeight(.bold)
-                Text(authManager.isAuthenticated ? "Google Drive 已就绪" : "Google 账号未连接")
-                    .font(.caption2)
-                    .foregroundColor(authManager.isAuthenticated ? .secondary : .orange)
+                HStack(spacing: 6) {
+                    Text("DJIToDrive").font(.headline).fontWeight(.bold)
+                    Text("v1.2").font(.system(size: 9, weight: .bold))
+                        .padding(.horizontal, 4).padding(.vertical, 1)
+                        .background(Color.secondary.opacity(0.15)).cornerRadius(3)
+                }
+                Text(authManager.isAuthenticated ? "Google Drive 已连接" : "Google 账号未连接")
+                    .font(.caption2).foregroundColor(authManager.isAuthenticated ? .secondary : .orange)
             }
             Spacer()
-            Circle()
-                .fill(hasActiveDevice ? Color.green : Color.orange)
-                .frame(width: 8, height: 8)
-            Text(hasActiveDevice ? "设备就绪" : "等待连接")
-                .font(.caption2)
-                .foregroundColor(.secondary)
+            Circle().fill(hasActiveDevice ? Color.green : Color.orange).frame(width: 8, height: 8)
+            Text(hasActiveDevice ? "\(detector.connectedDevices.count) 个存储就绪" : "等待连接")
+                .font(.caption2).foregroundColor(.secondary)
         }
-    }
-    
-    private func loadAppIcon() -> NSImage? {
-        if let path = Bundle.main.path(forResource: "AppIcon", ofType: "icns"),
-           let img = NSImage(contentsOfFile: path) {
-            return img
-        }
-        return NSImage(named: NSImage.applicationIconName)
     }
 
-    private var deviceStatusSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Image(systemName: hasActiveDevice ? "sdcard.fill" : "cable.connector.slash")
-                    .foregroundColor(hasActiveDevice ? .blue : .gray)
-                    .font(.title2)
-                    .frame(width: 28)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(detector.activeDevice?.displayName ?? "未检测到 DJI 设备")
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                    Text(detector.activeDevice?.volumeURL.path ?? "请插入 Pocket 3 / 4、360 全景相机或插卡")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer()
-                if isScanning {
-                    ProgressView()
-                        .scaleEffect(0.7)
-                } else if detector.connectedDevices.count > 1 {
-                    Menu {
-                        ForEach(detector.connectedDevices) { dev in
-                            Button {
-                                detector.selectDevice(dev)
-                            } label: {
-                                if dev.id == detector.activeDevice?.id {
-                                    Label(dev.displayName, systemImage: "checkmark")
-                                } else {
-                                    Text(dev.displayName)
-                                }
-                            }
-                        }
-                    } label: {
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+    // MARK: - 2. 双存储空间上下堆叠卡片 (Dual Storage Stacked Display)
+
+    private var dualStorageSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if detector.connectedDevices.isEmpty {
+                HStack(spacing: 10) {
+                    Image(systemName: "cable.connector.slash")
+                        .font(.title2).foregroundColor(.secondary).frame(width: 26)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("未检测到 DJI 设备").font(.subheadline).fontWeight(.semibold)
+                        Text("请连接 Pocket 3/4、360 全景相机或插入 TF/SD 存储卡")
+                            .font(.caption2).foregroundColor(.secondary)
                     }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
+                    Spacer()
+                }
+                .padding(8).background(Color(nsColor: .controlBackgroundColor)).cornerRadius(8)
+            } else {
+                ForEach(detector.connectedDevices) { dev in
+                    storageVolumeCard(for: dev)
                 }
             }
-            .padding(10)
-            .background(Color(nsColor: .controlBackgroundColor))
-            .cornerRadius(8)
         }
     }
 
-    private var syncSummarySection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("待同步高价值素材")
-                    .font(.caption)
-                    .fontWeight(.medium)
-                    .foregroundColor(.secondary)
-                Spacer()
-                Text("\(scanResult.items.count) 个文件 · \(formattedBytes(scanResult.totalSizeBytes))")
-                    .font(.caption)
-                    .fontWeight(.semibold)
+    private func storageVolumeCard(for dev: ConnectedDevice) -> some View {
+        let isSD = dev.volumeName.uppercased().contains("SD") || dev.volumeName.uppercased().contains("CARD")
+        let result = volumeScanResults[dev.id]
+        
+        return HStack(spacing: 10) {
+            Image(systemName: isSD ? "sdcard.fill" : "internaldrive.fill")
+                .font(.title2).foregroundColor(isSD ? .green : .blue).frame(width: 26)
+            
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(dev.displayName).font(.system(size: 12, weight: .semibold))
+                    Text(isSD ? "外置存储卡" : "机身存储")
+                        .font(.system(size: 9, weight: .medium))
+                        .padding(.horizontal, 4).padding(.vertical, 1)
+                        .background(isSD ? Color.green.opacity(0.15) : Color.blue.opacity(0.15))
+                        .foregroundColor(isSD ? .green : .blue).cornerRadius(3)
+                }
+                Text(dev.volumeURL.path)
+                    .font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1)
             }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 1) {
+                if isScanning {
+                    ProgressView().scaleEffect(0.6)
+                } else if let res = result {
+                    Text("\(res.items.count) 个素材").font(.system(size: 11, weight: .semibold))
+                    Text(formattedBytes(res.totalSizeBytes)).font(.system(size: 10)).foregroundColor(.secondary)
+                } else {
+                    Text("等待扫描").font(.system(size: 10)).foregroundColor(.secondary)
+                }
+            }
+        }
+        .padding(7).background(Color(nsColor: .controlBackgroundColor)).cornerRadius(6)
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.12), lineWidth: 1))
+    }
 
+    // MARK: - 3. 媒体筛选工具栏
+
+    private var mediaSelectionToolbar: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("素材勾选清单").font(.caption).fontWeight(.semibold)
+                Text("已勾选 \(selectedItems.count) / \(allScannedItems.count) 个 (\(formattedBytes(selectedTotalBytes)))")
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+            }
+            Spacer()
+            HStack(spacing: 4) {
+                Button("全选") { selectAllItems() }.buttonStyle(.bordered).controlSize(.mini)
+                Button("全不选") { deselectAllItems() }.buttonStyle(.bordered).controlSize(.mini)
+                Button("仅新素材") { selectOnlyValidNewItems() }.buttonStyle(.bordered).controlSize(.mini)
+                Button("排除废片") { excludeJunkItems() }.buttonStyle(.bordered).controlSize(.mini)
+            }
+        }
+    }
+
+    // MARK: - 4. 素材清单列表
+
+    private var mediaChecklistSection: some View {
+        Group {
+            if allScannedItems.isEmpty {
+                VStack(spacing: 6) {
+                    Image(systemName: isScanning ? "arrow.triangle.2.circlepath" : "photo.on.rectangle.angled")
+                        .font(.title2).foregroundColor(.secondary)
+                    Text(isScanning ? "正在扫描分析 DCIM 目录..." : "未发现待同步媒体文件")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity).frame(height: 135)
+                .background(Color(nsColor: .controlBackgroundColor).opacity(0.4)).cornerRadius(6)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 2) {
+                        ForEach(allScannedItems) { item in
+                            mediaItemRow(item)
+                        }
+                    }
+                    .padding(3)
+                }
+                .frame(height: 140)
+                .background(Color(nsColor: .controlBackgroundColor).opacity(0.4)).cornerRadius(6)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.12), lineWidth: 1))
+            }
+        }
+    }
+
+    private func mediaItemRow(_ item: ScannedMediaItem) -> some View {
+        let isSelected = selectedItemIds.contains(item.id)
+        let isUploaded = uploadedItemIds.contains(item.id)
+        
+        return HStack(spacing: 8) {
+            Toggle("", isOn: Binding(
+                get: { isSelected },
+                set: { checked in
+                    if checked { selectedItemIds.insert(item.id) }
+                    else { selectedItemIds.remove(item.id) }
+                }
+            ))
+            .toggleStyle(.checkbox).labelsHidden()
+            
+            Image(systemName: mediaIconName(for: item.kind))
+                .font(.caption)
+                .foregroundColor(item.isJunk ? .orange : (item.isCorrupt ? .red : .accentColor))
+                .frame(width: 14)
+            
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text(item.filename).font(.system(size: 11, weight: .medium, design: .monospaced)).lineLimit(1)
+                    if item.isCorrupt {
+                        badgeTag(text: "损坏 0B", color: .red)
+                    } else if item.isJunk {
+                        badgeTag(text: "疑似废片", color: .orange)
+                    } else if isUploaded {
+                        badgeTag(text: "已同步", color: .green)
+                    } else {
+                        badgeTag(text: "待同步", color: .blue)
+                    }
+                }
+                Text(formattedDate(item.creationDate)).font(.system(size: 9)).foregroundColor(.secondary)
+            }
+            Spacer()
+            Text(formattedBytes(item.sizeBytes))
+                .font(.system(size: 11, weight: .regular, design: .monospaced)).foregroundColor(.secondary)
+        }
+        .padding(.vertical, 2).padding(.horizontal, 6)
+        .background(isSelected ? Color.accentColor.opacity(0.08) : Color.clear).cornerRadius(4)
+    }
+
+    private func badgeTag(text: String, color: Color) -> some View {
+        Text(text).font(.system(size: 8, weight: .bold))
+            .padding(.horizontal, 4).padding(.vertical, 1)
+            .background(color.opacity(0.15)).foregroundColor(color).cornerRadius(3)
+    }
+
+    // MARK: - 5. 上传仪表盘与实时网速/ETA (Metrics Dashboard)
+
+    private var metricsDashboardSection: some View {
+        VStack(spacing: 6) {
             if uploadEngine.isUploading, let progress = uploadEngine.currentProgress {
-                VStack(spacing: 4) {
-                    ProgressView(value: progress.overallProgress, total: 1.0)
-                        .progressViewStyle(.linear)
+                VStack(spacing: 6) {
                     HStack {
                         Text("[\(progress.currentFileIndex)/\(progress.totalFiles)] \(progress.currentFilename)")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
+                            .font(.caption2).fontWeight(.semibold).lineLimit(1)
                         Spacer()
                         Text("\(Int(progress.overallProgress * 100))%")
-                            .font(.caption2)
-                            .fontWeight(.bold)
+                            .font(.caption2).fontWeight(.bold).foregroundColor(.accentColor)
+                    }
+                    ProgressView(value: progress.overallProgress, total: 1.0).progressViewStyle(.linear)
+                    
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 4) {
+                        metricBox(title: "📹 视频进度", value: "\(progress.currentFileIndex) / \(progress.totalFiles) 个")
+                        metricBox(title: "📊 上传流量", value: "\(formattedBytes(progress.totalUploadedBytes)) / \(formattedBytes(progress.totalBytesToUpload))")
+                        metricBox(title: "⚡ 实时网速", value: formattedSpeed(progress.speedBytesPerSec))
+                        metricBox(title: "⏱️ 预估剩余", value: formattedETA(progress.estimatedSecondsRemaining))
                     }
                 }
+                .padding(8).background(Color.accentColor.opacity(0.06)).cornerRadius(6)
             } else {
                 VStack(alignment: .leading, spacing: 4) {
                     if let success = uploadSuccessMessage {
-                        Text(success)
-                            .font(.caption2)
-                            .foregroundColor(.green)
+                        HStack(alignment: .top, spacing: 6) {
+                            Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
+                            Text(success).font(.caption2).foregroundColor(.green)
+                        }
                     } else if let err = uploadErrorMessage {
-                        Text(err)
-                            .font(.caption2)
-                            .foregroundColor(.red)
-                    } else if scanResult.ignoredCount > 0 {
-                        HStack {
-                            Image(systemName: "checkmark.shield.fill")
-                                .foregroundColor(.green)
-                                .font(.caption2)
-                            Text("已自动过滤 \(scanResult.ignoredCount) 个 .LRF 低清代理 (节省 \(formattedBytes(scanResult.ignoredSizeBytes)))")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
+                        HStack(alignment: .top, spacing: 6) {
+                            Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.red)
+                            Text(err).font(.caption2).foregroundColor(.red)
                         }
                     } else {
                         HStack {
-                            Label("自动过滤 .LRF 预览代理", systemImage: "checkmark.shield")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("云端归档目标").font(.system(size: 9)).foregroundColor(.secondary)
+                                Text(authManager.getTargetFolder())
+                                    .font(.caption2).fontWeight(.medium).lineLimit(1)
+                            }
                             Spacer()
-                            Label("保留 .WAV/.SRT", systemImage: "waveform")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
+                            VStack(alignment: .trailing, spacing: 2) {
+                                Text("废片过滤阈值").font(.system(size: 9)).foregroundColor(.secondary)
+                                Text("< \(authManager.getMinVideoSizeMB()) MB 自动排查")
+                                    .font(.caption2).fontWeight(.medium)
+                            }
                         }
                     }
                 }
+                .padding(8).background(Color(nsColor: .controlBackgroundColor).opacity(0.5)).cornerRadius(6)
             }
         }
-        .padding(10)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.6))
-        .cornerRadius(8)
     }
 
-    private var actionButtonGroup: some View {
-        VStack(spacing: 8) {
-            Button(action: { handleSyncOrAuthAction(isAuto: false) }) {
-                HStack {
-                    Image(systemName: uploadEngine.isUploading ? "arrow.triangle.2.circlepath" : (authManager.isAuthenticated ? "icloud.and.arrow.up.fill" : "key.fill"))
-                    Text(syncButtonTitle)
-                        .fontWeight(.semibold)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 4)
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(!hasActiveDevice || scanResult.items.isEmpty || uploadEngine.isUploading)
+    private func metricBox(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(title).font(.system(size: 9)).foregroundColor(.secondary)
+            Text(value).font(.system(size: 11, weight: .semibold)).lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading).padding(4)
+        .background(Color(nsColor: .controlBackgroundColor)).cornerRadius(4)
+    }
 
-            Button(action: scanDeviceManually) {
-                HStack {
-                    Image(systemName: "arrow.clockwise")
-                    Text(isScanning ? "正在扫描设备..." : "手动重新扫描挂载设备")
+    // MARK: - 6. 核心操作按钮 (严格手动启动，绝无自动开始)
+
+    private var actionButtonGroup: some View {
+        VStack(spacing: 6) {
+            if uploadEngine.isUploading {
+                HStack(spacing: 8) {
+                    Button(role: .destructive, action: { uploadEngine.cancel() }) {
+                        HStack {
+                            Image(systemName: "xmark.circle.fill")
+                            Text("取消上传")
+                        }
+                        .frame(maxWidth: .infinity).padding(.vertical, 4)
+                    }
+                    .buttonStyle(.bordered)
+                    
+                    Button(action: {}) {
+                        HStack {
+                            ProgressView().scaleEffect(0.6)
+                            Text("16MB Chunk 传输中...")
+                        }
+                        .frame(maxWidth: .infinity).padding(.vertical, 4)
+                    }
+                    .buttonStyle(.borderedProminent).disabled(true)
                 }
-                .frame(maxWidth: .infinity)
+            } else {
+                Button(action: { startSyncSelectedItems() }) {
+                    HStack {
+                        Image(systemName: authManager.isAuthenticated ? "icloud.and.arrow.up.fill" : "key.fill")
+                        Text(syncButtonTitle).fontWeight(.semibold)
+                    }
+                    .frame(maxWidth: .infinity).padding(.vertical, 5)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(allScannedItems.isEmpty || selectedItems.isEmpty || !authManager.isAuthenticated)
             }
-            .buttonStyle(.bordered)
-            .disabled(isScanning || uploadEngine.isUploading)
         }
     }
 
     private var syncButtonTitle: String {
-        if uploadEngine.isUploading {
-            return "正在 16MB Chunk 断点续传中..."
-        }
-        if !authManager.isAuthenticated {
-            return "请先在设置中连接 Google 账号"
-        }
-        return "一键开始上传至 Google Drive"
+        if !authManager.isAuthenticated { return "请先连接 Google 账号以开启同步" }
+        if detector.connectedDevices.isEmpty { return "请插入 DJI 设备" }
+        if allScannedItems.isEmpty { return "当前无媒体文件可同步" }
+        if selectedItems.isEmpty { return "请在上方列表中勾选要同步的文件" }
+        return "🚀 开始同步选中的 \(selectedItems.count) 个素材 (共 \(formattedBytes(selectedTotalBytes)))"
     }
+
+    // MARK: - 7. 底部辅助栏
 
     private var footerSection: some View {
         HStack {
-            Button("偏好设置与 Google 账号...") {
-                openPreferences()
-            }
-            .buttonStyle(.plain)
-            .font(.caption)
-            .foregroundColor(.secondary)
-
+            Button("偏好设置与 Google 账号...") { openPreferences() }
+                .buttonStyle(.plain).font(.caption).foregroundColor(.secondary)
             Spacer()
-
-            Button("退出") {
-                NSApplication.shared.terminate(nil)
+            Button(action: scanDeviceManually) {
+                Image(systemName: "arrow.clockwise").font(.caption)
+                    .foregroundColor(isScanning ? .accentColor : .secondary)
             }
-            .buttonStyle(.plain)
-            .font(.caption)
-            .foregroundColor(.secondary)
+            .buttonStyle(.plain).disabled(isScanning || uploadEngine.isUploading)
+            Spacer()
+            Button("退出") { NSApplication.shared.terminate(nil) }
+                .buttonStyle(.plain).font(.caption).foregroundColor(.secondary)
         }
     }
 
-    // MARK: - 业务交互动作 (Actions)
+    // MARK: - 业务逻辑实现
 
-    private func triggerMediaScan() async {
-        guard let device = detector.activeDevice else {
-            scanResult = .empty
-            return
-        }
+    private func scanAllConnectedVolumes() async {
         isScanning = true
-        let result = await scanner.scan(dcimURL: device.dcimURL)
-        await MainActor.run {
-            self.scanResult = result
-            self.isScanning = false
-        }
-    }
-
-    private func handleSyncOrAuthAction(isAuto: Bool = false) {
-        if !authManager.isAuthenticated {
-            if !isAuto {
-                openPreferences()
+        defer { isScanning = false }
+        
+        let devices = detector.connectedDevices
+        guard !devices.isEmpty else {
+            await MainActor.run {
+                self.volumeScanResults.removeAll()
+                self.selectedItemIds.removeAll()
+                self.uploadedItemIds.removeAll()
             }
             return
         }
         
-        guard !scanResult.items.isEmpty, !uploadEngine.isUploading else { return }
+        let minMB = authManager.getMinVideoSizeMB()
+        let minBytes = Int64(minMB) * 1024 * 1024
+        
+        var newResults: [String: ScanResult] = [:]
+        var newSelected = selectedItemIds
+        var newUploadedIds: Set<String> = []
+        
+        for dev in devices {
+            let res = await scanner.scan(dcimURL: dev.dcimURL, minVideoSizeBytes: minBytes)
+            newResults[dev.id] = res
+            
+            for item in res.items {
+                if let fp = ledger.calculateFingerprint(for: item.fileURL, fileSize: item.sizeBytes) {
+                    if await ledger.isUploaded(fingerprint: fp) {
+                        newUploadedIds.insert(item.id)
+                    }
+                }
+                // 首次扫描到：默认勾选非废片、非损坏且尚未同步的健康素材
+                if !selectedItemIds.contains(item.id) && !newUploadedIds.contains(item.id) && !item.isJunk && !item.isCorrupt {
+                    newSelected.insert(item.id)
+                }
+            }
+        }
+        
+        await MainActor.run {
+            self.volumeScanResults = newResults
+            self.selectedItemIds = newSelected
+            self.uploadedItemIds = newUploadedIds
+        }
+    }
+
+    private func selectAllItems() {
+        for item in allScannedItems { selectedItemIds.insert(item.id) }
+    }
+
+    private func deselectAllItems() {
+        selectedItemIds.removeAll()
+    }
+
+    private func selectOnlyValidNewItems() {
+        selectedItemIds = Set(
+            allScannedItems.filter { !uploadedItemIds.contains($0.id) && !$0.isJunk && !$0.isCorrupt }.map(\.id)
+        )
+    }
+
+    private func excludeJunkItems() {
+        for item in allScannedItems where item.isJunk || item.isCorrupt {
+            selectedItemIds.remove(item.id)
+        }
+    }
+
+    /// 严格由用户手动点击触发同步 (绝无插入自动开始)
+    private func startSyncSelectedItems() {
+        guard authManager.isAuthenticated else {
+            openPreferences()
+            return
+        }
+        let itemsToUpload = selectedItems
+        guard !itemsToUpload.isEmpty, !uploadEngine.isUploading else { return }
         
         uploadErrorMessage = nil
         uploadSuccessMessage = nil
         
-        let itemCount = scanResult.items.count
-        let totalSizeStr = formattedBytes(scanResult.totalSizeBytes)
-        let deviceName = detector.activeDevice?.displayName ?? "DJI 设备"
-        
         Task {
             do {
-                try await uploadEngine.uploadItems(scanResult.items)
+                let result = try await uploadEngine.uploadItems(itemsToUpload)
                 await MainActor.run {
-                    self.uploadSuccessMessage = "🎉 全量素材已成功同步到 Google Drive (DJI_Media 目录)！"
+                    self.uploadSuccessMessage = "🎉 同步完成！已上传 \(result.uploadedCount) 个，跳过 \(result.skippedCount) 个，传输流量 \(self.formattedBytes(result.totalBytesUploaded))。"
                     AppDelegate.sendNotification(
                         title: "DJIToDrive 素材同步完成",
-                        body: "来自 \(deviceName) 的 \(itemCount) 个素材 (\(totalSizeStr)) 已成功同步至 Google Drive！"
+                        body: "\(result.uploadedCount) 个素材 (\(self.formattedBytes(result.totalBytesUploaded))) 已导入 Google Drive！"
                     )
                 }
+                await scanAllConnectedVolumes()
             } catch {
                 await MainActor.run {
-                    self.uploadErrorMessage = "上传失败: \(error.localizedDescription)"
-                    AppDelegate.sendNotification(
-                        title: "DJIToDrive 同步未完成",
-                        body: "同步遇到问题: \(error.localizedDescription)"
-                    )
+                    if case UploadError.cancelled = error {
+                        self.uploadErrorMessage = "上传已由用户取消。"
+                    } else {
+                        self.uploadErrorMessage = "上传失败: \(error.localizedDescription)"
+                        AppDelegate.sendNotification(
+                            title: "DJIToDrive 同步未完成",
+                            body: "遇到问题: \(error.localizedDescription)"
+                        )
+                    }
                 }
             }
         }
@@ -324,9 +492,7 @@ struct MenuBarView: View {
 
     private func scanDeviceManually() {
         detector.scanExistingVolumes()
-        Task {
-            await triggerMediaScan()
-        }
+        Task { await scanAllConnectedVolumes() }
     }
 
     private func openPreferences() {
@@ -335,12 +501,10 @@ struct MenuBarView: View {
             NSApplication.shared.activate(ignoringOtherApps: true)
             return
         }
-        
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 480, height: 460),
             styleMask: [.titled, .closable],
-            backing: .buffered,
-            defer: false
+            backing: .buffered, defer: false
         )
         window.center()
         window.title = "DJIToDrive 偏好设置"
@@ -351,10 +515,51 @@ struct MenuBarView: View {
         self.settingsWindow = window
     }
 
+    private func loadAppIcon() -> NSImage? {
+        if let path = Bundle.main.path(forResource: "AppIcon", ofType: "icns"),
+           let img = NSImage(contentsOfFile: path) {
+            return img
+        }
+        return NSImage(named: NSImage.applicationIconName)
+    }
+
+    private func mediaIconName(for kind: MediaKind) -> String {
+        switch kind {
+        case .video: return "video.fill"
+        case .rawPhoto: return "camera.macro"
+        case .jpegPhoto: return "photo.fill"
+        case .audioTrack: return "waveform"
+        case .subtitleMeta: return "captions.bubble.fill"
+        }
+    }
+
+    private func formattedDate(_ date: Date) -> String {
+        let df = DateFormatter()
+        df.dateFormat = "MM-dd HH:mm"
+        return df.string(from: date)
+    }
+
     private func formattedBytes(_ bytes: Int64) -> String {
         let formatter = ByteCountFormatter()
         formatter.allowedUnits = [.useAll]
         formatter.countStyle = .file
         return formatter.string(fromByteCount: bytes)
+    }
+
+    private func formattedSpeed(_ bytesPerSec: Double) -> String {
+        if bytesPerSec <= 0 { return "-- MB/s" }
+        let mbPerSec = bytesPerSec / (1024.0 * 1024.0)
+        return mbPerSec < 0.1 ? String(format: "%.1f KB/s", bytesPerSec / 1024.0) : String(format: "%.1f MB/s", mbPerSec)
+    }
+
+    private func formattedETA(_ seconds: Double?) -> String {
+        guard let sec = seconds, sec > 0, !sec.isInfinite, !sec.isNaN else { return "--" }
+        let totalSec = Int(sec)
+        let hours = totalSec / 3600
+        let minutes = (totalSec % 3600) / 60
+        let remainingSec = totalSec % 60
+        if hours > 0 { return "\(hours)h \(minutes)m" }
+        if minutes > 0 { return "\(minutes)m \(remainingSec)s" }
+        return "\(remainingSec)s"
     }
 }

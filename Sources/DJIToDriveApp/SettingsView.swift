@@ -18,19 +18,29 @@ struct SettingsView: View {
     @State private var errorMessage: String?
     @State private var saveSuccessMessage: String?
     @State private var showSecret: Bool = false
+    
+    // 目标目录与过滤规则状态
+    @State private var targetFolderInput: String = ""
+    @State private var createDateSubfolderInput: Bool = true
+    @State private var minVideoSizeMBInput: Int = 10
+    @State private var targetSavedMessage: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            headerSection
-            Divider()
-            credentialsSection
-            Divider()
-            authStatusSection
-            Spacer()
-            footerHelpSection
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                headerSection
+                Divider()
+                credentialsSection
+                Divider()
+                authStatusSection
+                Divider()
+                targetDirectorySection
+                Divider()
+                footerHelpSection
+            }
+            .padding(20)
         }
-        .padding(20)
-        .frame(width: 480, height: 460)
+        .frame(width: 500, height: 600)
         .onAppear {
             loadExistingCredentials()
         }
@@ -174,6 +184,61 @@ struct SettingsView: View {
         }
     }
 
+    private var targetDirectorySection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("3. Google Drive 目标目录与过滤规则")
+                .font(.headline)
+            
+            VStack(alignment: .leading, spacing: 6) {
+                Text("目标目录 (支持文件夹名称或直接粘贴 Google Drive 网址/ID):")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                
+                HStack(spacing: 8) {
+                    TextField("例如: DJI_Media 或粘贴 drive.google.com/drive/folders/...", text: $targetFolderInput)
+                        .textFieldStyle(.roundedBorder)
+                    
+                    Button {
+                        if let pasteString = NSPasteboard.general.string(forType: .string) {
+                            targetFolderInput = pasteString.trimmingCharacters(in: .whitespacesAndNewlines)
+                        }
+                    } label: {
+                        Label("粘贴", systemImage: "doc.on.clipboard")
+                    }
+                    .buttonStyle(.bordered)
+                    .help("从系统剪贴板一键粘贴文件夹链接或名称")
+                }
+            }
+            
+            Toggle("按拍摄日期创建归档子目录 (例如: 目标目录/2026-09-09/)", isOn: $createDateSubfolderInput)
+                .font(.subheadline)
+            
+            HStack {
+                Text("疑似废片过滤阈值:")
+                    .font(.subheadline)
+                Stepper("\(minVideoSizeMBInput) MB", value: $minVideoSizeMBInput, in: 1...100)
+                    .frame(width: 140)
+                Text("(小于此大小的视频标记为废片并不默认勾选)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            
+            HStack {
+                Button("保存目标目录与过滤配置") {
+                    saveTargetSettings()
+                }
+                .buttonStyle(.borderedProminent)
+                
+                if let msg = targetSavedMessage {
+                    Text(msg)
+                        .font(.caption)
+                        .foregroundColor(.green)
+                }
+                Spacer()
+            }
+        }
+    }
+
     private var footerHelpSection: some View {
         HStack {
             Image(systemName: "questionmark.circle")
@@ -195,13 +260,26 @@ struct SettingsView: View {
     private func loadExistingCredentials() {
         clientIdInput = authManager.getClientId() ?? ""
         clientSecretInput = authManager.getClientSecret() ?? ""
+        targetFolderInput = authManager.getTargetFolder()
+        createDateSubfolderInput = authManager.getCreateDateSubfolder()
+        minVideoSizeMBInput = authManager.getMinVideoSizeMB()
     }
 
     private func saveCredentials() {
         authManager.saveClientCredentials(clientId: clientIdInput, clientSecret: clientSecretInput)
-        saveSuccessMessage = "✅ 凭证已安全固化到系统钥匙串！"
+        saveSuccessMessage = "✅ 凭证已安全固化保存（0600 本地保护）！"
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
             saveSuccessMessage = nil
+        }
+    }
+    
+    private func saveTargetSettings() {
+        authManager.setTargetFolder(targetFolderInput)
+        authManager.setCreateDateSubfolder(createDateSubfolderInput)
+        authManager.setMinVideoSizeMB(minVideoSizeMBInput)
+        targetSavedMessage = "✅ 目标目录与过滤规则已成功保存！"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+            targetSavedMessage = nil
         }
     }
 

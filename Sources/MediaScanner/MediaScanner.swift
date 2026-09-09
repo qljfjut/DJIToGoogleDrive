@@ -24,6 +24,8 @@ public struct ScannedMediaItem: Identifiable, Sendable, Equatable {
     public let sizeBytes: Int64
     public let creationDate: Date
     public let kind: MediaKind
+    public let isJunk: Bool
+    public let isCorrupt: Bool
     public var isSelected: Bool
     
     public init(
@@ -32,6 +34,8 @@ public struct ScannedMediaItem: Identifiable, Sendable, Equatable {
         sizeBytes: Int64,
         creationDate: Date,
         kind: MediaKind,
+        isJunk: Bool = false,
+        isCorrupt: Bool = false,
         isSelected: Bool = true
     ) {
         self.filename = filename
@@ -39,6 +43,8 @@ public struct ScannedMediaItem: Identifiable, Sendable, Equatable {
         self.sizeBytes = sizeBytes
         self.creationDate = creationDate
         self.kind = kind
+        self.isJunk = isJunk
+        self.isCorrupt = isCorrupt
         self.isSelected = isSelected
     }
 }
@@ -49,6 +55,8 @@ public struct ScanResult: Sendable {
     public let totalSizeBytes: Int64
     public let ignoredCount: Int
     public let ignoredSizeBytes: Int64
+    public let junkCount: Int
+    public let junkSizeBytes: Int64
     public let scanDurationSeconds: Double
     
     public init(
@@ -56,17 +64,21 @@ public struct ScanResult: Sendable {
         totalSizeBytes: Int64,
         ignoredCount: Int,
         ignoredSizeBytes: Int64,
+        junkCount: Int = 0,
+        junkSizeBytes: Int64 = 0,
         scanDurationSeconds: Double
     ) {
         self.items = items
         self.totalSizeBytes = totalSizeBytes
         self.ignoredCount = ignoredCount
         self.ignoredSizeBytes = ignoredSizeBytes
+        self.junkCount = junkCount
+        self.junkSizeBytes = junkSizeBytes
         self.scanDurationSeconds = scanDurationSeconds
     }
     
     public static var empty: ScanResult {
-        ScanResult(items: [], totalSizeBytes: 0, ignoredCount: 0, ignoredSizeBytes: 0, scanDurationSeconds: 0)
+        ScanResult(items: [], totalSizeBytes: 0, ignoredCount: 0, ignoredSizeBytes: 0, junkCount: 0, junkSizeBytes: 0, scanDurationSeconds: 0)
     }
 }
 
@@ -85,8 +97,8 @@ public final class MediaScanner: Sendable {
     
     public init() {}
     
-    /// 异步扫描指定的 DCIM 根目录并输出过滤结果
-    public func scan(dcimURL: URL) async -> ScanResult {
+    /// 异步扫描指定的 DCIM 根目录并输出过滤结果（支持可配置废片大小过滤阈值）
+    public func scan(dcimURL: URL, minVideoSizeBytes: Int64 = 10 * 1024 * 1024) async -> ScanResult {
         let startTime = CFAbsoluteTimeGetCurrent()
         let fileManager = FileManager.default
         
@@ -102,6 +114,8 @@ public final class MediaScanner: Sendable {
         var totalValidSize: Int64 = 0
         var ignoredFileCount: Int = 0
         var ignoredTotalSize: Int64 = 0
+        var junkFileCount: Int = 0
+        var junkTotalSize: Int64 = 0
         
         while let fileURL = enumerator.nextObject() as? URL {
             // 排除 macOS 系统双元数据（如 ._DJI_0001.MP4）
@@ -126,17 +140,29 @@ public final class MediaScanner: Sendable {
                 continue
             }
             
-            // 2. 命中白名单，分类归档
+            // 2. 命中白名单，分类归档与智能排查
             if let kind = resolveMediaKind(forExtension: ext) {
                 // 优先从 DJI/Osmo 文件名（例如 CAM_20260516142802_0001_D.OSV）精确解析拍摄时间
                 let date = parseDateFromFilename(filename) ?? resourceValues.creationDate ?? resourceValues.contentModificationDate ?? Date()
+                
+                // 废片与损坏排查：0 字节判定损坏；主视频且小于设定阈值（如 <10MB）判定为误触废片
+                let isCorrupt = (fileSize <= 0)
+                let isJunkVideo = (kind == .video && fileSize < minVideoSizeBytes) || isCorrupt
+                
+                if isJunkVideo {
+                    junkFileCount += 1
+                    junkTotalSize += fileSize
+                }
+                
                 let item = ScannedMediaItem(
                     filename: filename,
                     fileURL: fileURL,
                     sizeBytes: fileSize,
                     creationDate: date,
                     kind: kind,
-                    isSelected: true
+                    isJunk: isJunkVideo,
+                    isCorrupt: isCorrupt,
+                    isSelected: !isJunkVideo // 废片默认取消勾选，有效素材默认勾选
                 )
                 validItems.append(item)
                 totalValidSize += fileSize
@@ -155,6 +181,8 @@ public final class MediaScanner: Sendable {
             totalSizeBytes: totalValidSize,
             ignoredCount: ignoredFileCount,
             ignoredSizeBytes: ignoredTotalSize,
+            junkCount: junkFileCount,
+            junkSizeBytes: junkTotalSize,
             scanDurationSeconds: elapsed
         )
     }

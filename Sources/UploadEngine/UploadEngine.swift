@@ -38,6 +38,20 @@ public struct UploadProgressState: Sendable {
     public let totalUploadedBytes: Int64
     public let totalBytesToUpload: Int64
     public let overallProgress: Double
+    public let speedBytesPerSec: Double
+    public let estimatedSecondsRemaining: Double?
+}
+
+public struct UploadResult: Sendable {
+    public let uploadedCount: Int
+    public let skippedCount: Int
+    public let totalBytesUploaded: Int64
+    
+    public init(uploadedCount: Int, skippedCount: Int, totalBytesUploaded: Int64) {
+        self.uploadedCount = uploadedCount
+        self.skippedCount = skippedCount
+        self.totalBytesUploaded = totalBytesUploaded
+    }
 }
 
 @MainActor
@@ -56,9 +70,14 @@ public final class UploadEngine: ObservableObject {
     private var folderIdCache: [String: String] = [:]
     private var isCancelled: Bool = false
     
-    public init(ledger: Ledger = Ledger(), authManager: AuthManager = .shared) {
+    // 实时网速采样计算
+    private var lastSampleTime: CFAbsoluteTime = 0
+    private var lastSampleBytes: Int64 = 0
+    private var currentSpeedBytesPerSec: Double = 0
+    
+    public init(ledger: Ledger = Ledger(), authManager: AuthManager? = nil) {
         self.ledger = ledger
-        self.authManager = authManager
+        self.authManager = authManager ?? AuthManager.shared
     }
     
     public func cancel() {
@@ -68,44 +87,92 @@ public final class UploadEngine: ObservableObject {
     
     // MARK: - 批量上传入口 (Batch Upload Entrypoint)
     
+    @discardableResult
     public func uploadItems(
         _ items: [ScannedMediaItem],
         onProgress: (@Sendable (UploadProgressState) -> Void)? = nil
-    ) async throws {
-        guard !items.isEmpty else { return }
+    ) async throws -> UploadResult {
+        guard !items.isEmpty else {
+            return UploadResult(uploadedCount: 0, skippedCount: 0, totalBytesUploaded: 0)
+        }
         
         isCancelled = false
         isUploading = true
         defer { isUploading = false }
         
         let token = try await authManager.getValidAccessToken()
-        let rootFolderId = try await getOrCreateFolder(named: "DJI_Media", parentId: nil, token: token)
+        let targetFolderInput = authManager.getTargetFolder()
+        let rootFolderId = try await resolveTargetFolderId(from: targetFolderInput, token: token)
+        let createDateSubfolder = authManager.getCreateDateSubfolder()
         
         let totalBytes = items.reduce(0) { $0 + $1.sizeBytes }
         var uploadedBytesSoFar: Int64 = 0
+        var uploadedCount = 0
+        var skippedCount = 0
+        var actualUploadedBytes: Int64 = 0
+        
+        lastSampleTime = CFAbsoluteTimeGetCurrent()
+        lastSampleBytes = 0
+        currentSpeedBytesPerSec = 0
+        
+        // 云端对账文件清单缓存（FolderID -> [Filename: Size]）
+        var cloudFilesCache: [String: [String: Int64]] = [:]
         
         for (index, item) in items.enumerated() {
             if isCancelled { throw UploadError.cancelled }
             
-            // 1. 去重检查：计算指纹并核对账本
-            if let fingerprint = ledger.calculateFingerprint(for: item.fileURL, fileSize: item.sizeBytes),
-               await ledger.isUploaded(fingerprint: fingerprint) {
-                // 已存在则直接累加并跳过
+            // 确定当前文件的具体云端目标目录
+            let destinationFolderId: String
+            let cloudPathPrefix: String
+            
+            if createDateSubfolder {
+                let dateFormatter = DateFormatter()
+                dateFormatter.dateFormat = "yyyy-MM-dd"
+                let dateDirName = dateFormatter.string(from: item.creationDate)
+                destinationFolderId = try await getOrCreateFolder(named: dateDirName, parentId: rootFolderId, token: token)
+                cloudPathPrefix = "\(targetFolderInput)/\(dateDirName)"
+            } else {
+                destinationFolderId = rootFolderId
+                cloudPathPrefix = targetFolderInput
+            }
+            
+            let fingerprint = ledger.calculateFingerprint(for: item.fileURL, fileSize: item.sizeBytes)
+            
+            // 1. 本地账本指纹比对
+            if let fp = fingerprint, await ledger.isUploaded(fingerprint: fp) {
+                skippedCount += 1
                 uploadedBytesSoFar += item.sizeBytes
+                reportProgress(item: item, fileIndex: index + 1, totalFiles: items.count, overallUploaded: uploadedBytesSoFar, grandTotalBytes: totalBytes, onProgress: onProgress)
                 continue
             }
             
-            // 2. 解析日期目录：按 YYYY-MM-DD 归档
-            let dateFormatter = DateFormatter()
-            dateFormatter.dateFormat = "yyyy-MM-dd"
-            let dateDirName = dateFormatter.string(from: item.creationDate)
-            
-            let dateFolderId = try await getOrCreateFolder(named: dateDirName, parentId: rootFolderId, token: token)
+            // 2. 云端反向对账自愈（本地账本误删/换电脑兜底防重）
+            if cloudFilesCache[destinationFolderId] == nil {
+                cloudFilesCache[destinationFolderId] = await fetchCloudExistingFiles(in: destinationFolderId, token: token)
+            }
+            if let cloudFiles = cloudFilesCache[destinationFolderId],
+               let cloudSize = cloudFiles[item.filename],
+               cloudSize == item.sizeBytes {
+                // 云端已存在同名且字节大小完全一致的文件！自动自愈写入本地账本并跳过
+                if let fp = fingerprint {
+                    await ledger.recordUpload(
+                        fingerprint: fp,
+                        filename: item.filename,
+                        fileSize: item.sizeBytes,
+                        cloudFileId: "cloud_reconciled",
+                        cloudPath: "\(cloudPathPrefix)/\(item.filename)"
+                    )
+                }
+                skippedCount += 1
+                uploadedBytesSoFar += item.sizeBytes
+                reportProgress(item: item, fileIndex: index + 1, totalFiles: items.count, overallUploaded: uploadedBytesSoFar, grandTotalBytes: totalBytes, onProgress: onProgress)
+                continue
+            }
             
             // 3. 执行单文件 16MB Chunk 断点续传
             let cloudFileId = try await uploadSingleFile(
                 item: item,
-                parentFolderId: dateFolderId,
+                parentFolderId: destinationFolderId,
                 token: token,
                 fileIndex: index + 1,
                 totalFiles: items.count,
@@ -115,18 +182,46 @@ public final class UploadEngine: ObservableObject {
             )
             
             uploadedBytesSoFar += item.sizeBytes
+            actualUploadedBytes += item.sizeBytes
+            uploadedCount += 1
             
-            // 4. 上传成功，写入账本固化
-            if let fingerprint = ledger.calculateFingerprint(for: item.fileURL, fileSize: item.sizeBytes) {
+            // 4. 上传成功，固化至本地账本
+            if let fp = fingerprint {
                 await ledger.recordUpload(
-                    fingerprint: fingerprint,
+                    fingerprint: fp,
                     filename: item.filename,
                     fileSize: item.sizeBytes,
                     cloudFileId: cloudFileId,
-                    cloudPath: "DJI_Media/\(dateDirName)/\(item.filename)"
+                    cloudPath: "\(cloudPathPrefix)/\(item.filename)"
                 )
             }
         }
+        
+        return UploadResult(uploadedCount: uploadedCount, skippedCount: skippedCount, totalBytesUploaded: actualUploadedBytes)
+    }
+    
+    private func reportProgress(
+        item: ScannedMediaItem,
+        fileIndex: Int,
+        totalFiles: Int,
+        overallUploaded: Int64,
+        grandTotalBytes: Int64,
+        onProgress: (@Sendable (UploadProgressState) -> Void)?
+    ) {
+        let overallProg = Double(overallUploaded) / Double(max(1, grandTotalBytes))
+        let state = UploadProgressState(
+            currentFilename: item.filename,
+            currentFileIndex: fileIndex,
+            totalFiles: totalFiles,
+            currentFileProgress: 1.0,
+            totalUploadedBytes: overallUploaded,
+            totalBytesToUpload: grandTotalBytes,
+            overallProgress: overallProg,
+            speedBytesPerSec: currentSpeedBytesPerSec,
+            estimatedSecondsRemaining: nil
+        )
+        self.currentProgress = state
+        onProgress?(state)
     }
     
     // MARK: - 单文件分片上传 (Chunked Upload Engine)
@@ -141,7 +236,6 @@ public final class UploadEngine: ObservableObject {
         grandTotalBytes: Int64,
         onProgress: (@Sendable (UploadProgressState) -> Void)?
     ) async throws -> String {
-        // 1. 获取会话 Session URI
         let sessionURI = try await initResumableSession(
             filename: item.filename,
             fileSize: item.sizeBytes,
@@ -158,7 +252,6 @@ public final class UploadEngine: ObservableObject {
         var uploadedForThisFile: Int64 = 0
         let totalFileSize = item.sizeBytes
         
-        // 2. 循环按 16MB 分片推送
         while uploadedForThisFile < totalFileSize {
             if isCancelled { throw UploadError.cancelled }
             
@@ -172,7 +265,6 @@ public final class UploadEngine: ObservableObject {
             let rangeStart = uploadedForThisFile
             let rangeEnd = uploadedForThisFile + Int64(chunkData.count) - 1
             
-            // 3. 发送分片并处理 308 / 200 状态与断网重试
             let resultId = try await uploadChunkWithRetry(
                 sessionURI: sessionURI,
                 chunkData: chunkData,
@@ -183,9 +275,24 @@ public final class UploadEngine: ObservableObject {
             
             uploadedForThisFile += Int64(chunkData.count)
             
-            // 进度派发
-            let fileProgress = Double(uploadedForThisFile) / Double(max(1, totalFileSize))
+            // 实时网速与剩余时间采样
+            let now = CFAbsoluteTimeGetCurrent()
+            let timeDelta = now - lastSampleTime
             let overallUploaded = baseUploadedBytes + uploadedForThisFile
+            
+            if timeDelta >= 0.8 {
+                let bytesDelta = overallUploaded - lastSampleBytes
+                if bytesDelta > 0 {
+                    currentSpeedBytesPerSec = Double(bytesDelta) / timeDelta
+                }
+                lastSampleTime = now
+                lastSampleBytes = overallUploaded
+            }
+            
+            let remainingBytes = max(0, grandTotalBytes - overallUploaded)
+            let etaSeconds: Double? = currentSpeedBytesPerSec > 1024 ? Double(remainingBytes) / currentSpeedBytesPerSec : nil
+            
+            let fileProgress = Double(uploadedForThisFile) / Double(max(1, totalFileSize))
             let overallProg = Double(overallUploaded) / Double(max(1, grandTotalBytes))
             
             let state = UploadProgressState(
@@ -195,7 +302,9 @@ public final class UploadEngine: ObservableObject {
                 currentFileProgress: fileProgress,
                 totalUploadedBytes: overallUploaded,
                 totalBytesToUpload: grandTotalBytes,
-                overallProgress: overallProg
+                overallProgress: overallProg,
+                speedBytesPerSec: currentSpeedBytesPerSec,
+                estimatedSecondsRemaining: etaSeconds
             )
             
             self.currentProgress = state
@@ -347,6 +456,66 @@ public final class UploadEngine: ObservableObject {
         }
         
         return "root"
+    }
+    
+    // MARK: - 目标目录解析与云端反向对账自愈 (Reconciliation)
+    
+    private func resolveTargetFolderId(from input: String, token: String) async throws -> String {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == "DJI_Media" {
+            return try await getOrCreateFolder(named: "DJI_Media", parentId: nil, token: token)
+        }
+        
+        // 1. 如果用户粘贴的是 Google Drive 完整链接 (如 https://drive.google.com/drive/folders/1ABCxyz?usp=sharing)
+        if let range = trimmed.range(of: "folders/") {
+            let sub = trimmed[range.upperBound...]
+            let cleanId = String(sub.prefix { $0 != "?" && $0 != "&" && $0 != "/" })
+            if !cleanId.isEmpty {
+                return cleanId
+            }
+        }
+        
+        // 2. 如果符合 Google Drive 文件夹 ID 特征 (25~45 位字母数字、下划线、减号)
+        let idRegex = "^[a-zA-Z0-9_-]{25,45}$"
+        if trimmed.range(of: idRegex, options: .regularExpression) != nil {
+            return trimmed
+        }
+        
+        // 3. 否则作为普通文件夹名称在根目录查找或创建
+        return try await getOrCreateFolder(named: trimmed, parentId: nil, token: token)
+    }
+    
+    /// 查询指定云端目录现存文件清单（文件名 -> 字节大小），用于反向对账自愈 (Cloud Reconciliation)
+    private func fetchCloudExistingFiles(in folderId: String, token: String) async -> [String: Int64] {
+        var result: [String: Int64] = [:]
+        var comp = URLComponents(string: "https://www.googleapis.com/drive/v3/files")!
+        let query = "'\(folderId)' in parents and trashed = false"
+        comp.queryItems = [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "fields", value: "files(id, name, size)"),
+            URLQueryItem(name: "pageSize", value: "1000")
+        ]
+        
+        guard let url = comp.url else { return result }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse, http.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let files = json["files"] as? [[String: Any]] else {
+            return result
+        }
+        
+        for file in files {
+            if let name = file["name"] as? String,
+               let sizeStr = file["size"] as? String,
+               let size = Int64(sizeStr) {
+                result[name] = size
+            }
+        }
+        
+        return result
     }
     
     private func mimeType(for ext: String) -> String {
