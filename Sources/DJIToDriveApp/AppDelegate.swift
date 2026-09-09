@@ -83,9 +83,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - 灵动状态栏动态微动画 (Dynamic Micro-Animation State Machine)
 
     private func setupStatusItem() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem?.button {
             button.title = "" // 纯粹极简，绝无文字干扰
+            button.imagePosition = .imageOnly
             button.image = makeSymbolImage(name: "camera.fill")
             button.action = #selector(togglePopover)
             button.target = self
