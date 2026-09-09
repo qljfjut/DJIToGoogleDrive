@@ -11,6 +11,12 @@ extension Notification.Name {
     public static let djiSingleFileCompleted = Notification.Name("DJIToDriveSingleFileCompleted")
 }
 
+public enum PreemptionReason: Equatable, Sendable {
+    case jumpQueue(targetItemId: String)
+    case pauseCurrent
+    case skipCurrent
+}
+
 public struct SingleFileUploadOutcome: Sendable {
     public let cloudFileId: String
     public let isPreempted: Bool

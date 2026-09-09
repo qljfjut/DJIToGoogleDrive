@@ -84,6 +84,7 @@ public final class UploadEngine: ObservableObject {
     @Published public private(set) var isPaused: Bool = false
     @Published public private(set) var currentUploadingItemId: String? = nil
     @Published public private(set) var queuedItemIds: [String] = []
+    @Published public private(set) var pausedItemIds: Set<String> = []
     @Published public private(set) var completedItemIds: Set<String> = []
     @Published public private(set) var currentProgress: UploadProgressState?
     
@@ -92,11 +93,13 @@ public final class UploadEngine: ObservableObject {
     
     // 任务队列与抢占控制
     private var activeQueue: [ScannedMediaItem] = []
+    private var allItemsMap: [String: ScannedMediaItem] = [:]
     private var shouldPreemptCurrentFile: Bool = false
+    private var preemptionReason: PreemptionReason? = nil
     private var pauseContinuation: CheckedContinuation<Void, Never>?
     
     // 缓存文件夹 ID：避免每个文件都向 Google 发起文件夹查询
-    private var folderIdCache: [String: String] = [:]
+    var folderIdCache: [String: String] = [:]
     private var isCancelled: Bool = false
     
     // 实时网速采样计算
@@ -132,6 +135,9 @@ public final class UploadEngine: ObservableObject {
         self.currentUploadingItemId = nil
         self.activeQueue.removeAll()
         self.queuedItemIds.removeAll()
+        self.pausedItemIds.removeAll()
+        self.allItemsMap.removeAll()
+        self.preemptionReason = nil
         NotificationCenter.default.post(name: .djiUploadLifecycleStateChanged, object: nil, userInfo: ["state": "idle"])
     }
     
@@ -143,12 +149,58 @@ public final class UploadEngine: ObservableObject {
         if immediate && currentUploadingItemId != nil {
             activeQueue.insert(targetItem, at: 0)
             queuedItemIds = activeQueue.map(\.id)
+            preemptionReason = .jumpQueue(targetItemId: itemId)
             shouldPreemptCurrentFile = true
             if isPaused {
                 resume()
             }
         } else {
             activeQueue.insert(targetItem, at: 0)
+            queuedItemIds = activeQueue.map(\.id)
+        }
+    }
+
+    /// 单独暂停当前正在上传的文件，安全保存断点并自动让出通道顺延至排队 #1 任务
+    public func pauseCurrentItemAndProceedNext() {
+        guard let currentId = currentUploadingItemId else { return }
+        pausedItemIds.insert(currentId)
+        preemptionReason = .pauseCurrent
+        shouldPreemptCurrentFile = true
+        if isPaused {
+            resume()
+        }
+    }
+
+    /// 恢复已暂停的文件，重新插回队列首位接续断点上传
+    public func resumeItem(itemId: String) {
+        pausedItemIds.remove(itemId)
+        guard let item = allItemsMap[itemId] else { return }
+        
+        if currentUploadingItemId != nil {
+            activeQueue.insert(item, at: 0)
+            queuedItemIds = activeQueue.map(\.id)
+            preemptionReason = .jumpQueue(targetItemId: itemId)
+            shouldPreemptCurrentFile = true
+            if isPaused {
+                resume()
+            }
+        } else {
+            activeQueue.insert(item, at: 0)
+            queuedItemIds = activeQueue.map(\.id)
+        }
+    }
+
+    /// 单独取消/跳过指定文件：若为当前文件则立即让道开启下一个
+    public func cancelSingleItem(itemId: String) {
+        pausedItemIds.remove(itemId)
+        if itemId == currentUploadingItemId {
+            preemptionReason = .skipCurrent
+            shouldPreemptCurrentFile = true
+            if isPaused {
+                resume()
+            }
+        } else {
+            activeQueue.removeAll { $0.id == itemId }
             queuedItemIds = activeQueue.map(\.id)
         }
     }
@@ -171,6 +223,7 @@ public final class UploadEngine: ObservableObject {
         queuedItemIds = items.map(\.id)
         currentUploadingItemId = nil
         completedItemIds.removeAll()
+        allItemsMap = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
         
         NotificationCenter.default.post(name: .djiUploadLifecycleStateChanged, object: nil, userInfo: ["state": "uploading"])
         defer {
@@ -179,6 +232,9 @@ public final class UploadEngine: ObservableObject {
             currentUploadingItemId = nil
             activeQueue.removeAll()
             queuedItemIds.removeAll()
+            pausedItemIds.removeAll()
+            allItemsMap.removeAll()
+            preemptionReason = nil
             if isCancelled {
                 NotificationCenter.default.post(name: .djiUploadLifecycleStateChanged, object: nil, userInfo: ["state": "idle"])
             }
@@ -285,9 +341,16 @@ public final class UploadEngine: ObservableObject {
             )
             
             if outcome.isPreempted {
-                // 当前文件被紧急任务插队让道：重新插回排队首位，等待插队任务完成后无缝断点续传
-                activeQueue.insert(item, at: 0)
-                queuedItemIds = activeQueue.map(\.id)
+                if preemptionReason == .pauseCurrent {
+                    // 用户单独暂停了当前文件：保留在 pausedItemIds 中，不重新塞入队列，自动顺延传输排队 #1
+                } else if preemptionReason == .skipCurrent {
+                    // 用户单独取消/跳过了当前文件：不重新塞入队列
+                } else {
+                    // 紧急任务插队让道：将原文件重新插回排队首位，等待插队任务完成后无缝断点续传
+                    activeQueue.insert(item, at: 0)
+                    queuedItemIds = activeQueue.map(\.id)
+                }
+                preemptionReason = nil
                 processedFileCount -= 1
                 continue
             }
@@ -634,132 +697,5 @@ public final class UploadEngine: ObservableObject {
         
         return sessionURI
     }
-    
-    // MARK: - 目录管理 (Folder Hierarchy)
-    
-    private func getOrCreateFolder(named name: String, parentId: String?, token: String) async throws -> String {
-        let cacheKey = "\(parentId ?? "root")/\(name)"
-        if let cached = folderIdCache[cacheKey] {
-            return cached
-        }
-        
-        // 查询目录是否存在
-        var query = "name = '\(name)' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-        if let pid = parentId {
-            query += " and '\(pid)' in parents"
-        }
-        
-        var comp = URLComponents(string: "https://www.googleapis.com/drive/v3/files")!
-        comp.queryItems = [URLQueryItem(name: "q", value: query), URLQueryItem(name: "fields", value: "files(id, name)")]
-        
-        var request = URLRequest(url: comp.url!)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        
-        let (data, response) = try await URLSession.shared.data(for: request)
-        if let http = response as? HTTPURLResponse, http.statusCode == 200,
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let files = json["files"] as? [[String: Any]],
-           let first = files.first,
-           let id = first["id"] as? String {
-            folderIdCache[cacheKey] = id
-            return id
-        }
-        
-        // 目录不存在则动态创建
-        var createReq = URLRequest(url: URL(string: "https://www.googleapis.com/drive/v3/files")!)
-        createReq.httpMethod = "POST"
-        createReq.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        createReq.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        var meta: [String: Any] = [
-            "name": name,
-            "mimeType": "application/vnd.google-apps.folder"
-        ]
-        if let pid = parentId {
-            meta["parents"] = [pid]
-        }
-        createReq.httpBody = try? JSONSerialization.data(withJSONObject: meta)
-        
-        let (createData, createRes) = try await URLSession.shared.data(for: createReq)
-        if let http = createRes as? HTTPURLResponse, (http.statusCode == 200 || http.statusCode == 201),
-           let json = try? JSONSerialization.jsonObject(with: createData) as? [String: Any],
-           let newId = json["id"] as? String {
-            folderIdCache[cacheKey] = newId
-            return newId
-        }
-        
-        return "root"
-    }
-    
-    // MARK: - 目标目录解析与云端反向对账自愈 (Reconciliation)
-    
-    private func resolveTargetFolderId(from input: String, token: String) async throws -> String {
-        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty || trimmed == "DJI_Media" {
-            return try await getOrCreateFolder(named: "DJI_Media", parentId: nil, token: token)
-        }
-        
-        // 1. 如果用户粘贴的是 Google Drive 完整链接 (如 https://drive.google.com/drive/folders/1ABCxyz?usp=sharing)
-        if let range = trimmed.range(of: "folders/") {
-            let sub = trimmed[range.upperBound...]
-            let cleanId = String(sub.prefix { $0 != "?" && $0 != "&" && $0 != "/" })
-            if !cleanId.isEmpty {
-                return cleanId
-            }
-        }
-        
-        // 2. 如果符合 Google Drive 文件夹 ID 特征 (25~45 位字母数字、下划线、减号)
-        let idRegex = "^[a-zA-Z0-9_-]{25,45}$"
-        if trimmed.range(of: idRegex, options: .regularExpression) != nil {
-            return trimmed
-        }
-        
-        // 3. 否则作为普通文件夹名称在根目录查找或创建
-        return try await getOrCreateFolder(named: trimmed, parentId: nil, token: token)
-    }
-    
-    /// 查询指定云端目录现存文件清单（文件名 -> 字节大小），用于反向对账自愈 (Cloud Reconciliation)
-    private func fetchCloudExistingFiles(in folderId: String, token: String) async -> [String: Int64] {
-        var result: [String: Int64] = [:]
-        var comp = URLComponents(string: "https://www.googleapis.com/drive/v3/files")!
-        let query = "'\(folderId)' in parents and trashed = false"
-        comp.queryItems = [
-            URLQueryItem(name: "q", value: query),
-            URLQueryItem(name: "fields", value: "files(id, name, size)"),
-            URLQueryItem(name: "pageSize", value: "1000")
-        ]
-        
-        guard let url = comp.url else { return result }
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              let http = response as? HTTPURLResponse, http.statusCode == 200,
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let files = json["files"] as? [[String: Any]] else {
-            return result
-        }
-        
-        for file in files {
-            if let name = file["name"] as? String,
-               let sizeStr = file["size"] as? String,
-               let size = Int64(sizeStr) {
-                result[name] = size
-            }
-        }
-        
-        return result
-    }
-    
-    private func mimeType(for ext: String) -> String {
-        switch ext.lowercased() {
-        case "mp4", "osv": return "video/mp4"
-        case "mov": return "video/quicktime"
-        case "jpg", "jpeg": return "image/jpeg"
-        case "dng": return "image/x-adobe-dng"
-        case "wav": return "audio/wav"
-        case "srt": return "text/plain"
-        default: return "application/octet-stream"
-        }
-    }
 }
+

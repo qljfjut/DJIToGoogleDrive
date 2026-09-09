@@ -217,13 +217,15 @@ struct MenuBarView: View {
         let isSelected = selectedItemIds.contains(item.id)
         let isUploaded = uploadedItemIds.contains(item.id) || uploadEngine.completedItemIds.contains(item.id)
         let isCurrentlyUploading = (item.id == uploadEngine.currentUploadingItemId)
+        let isPausedItem = uploadEngine.pausedItemIds.contains(item.id)
         let queueIndex = uploadEngine.queuedItemIds.firstIndex(of: item.id)
         
         let deviceName: String? = detector.connectedDevices.count > 1
             ? detector.connectedDevices.first(where: { item.fileURL.path.hasPrefix($0.volumeURL.path) })?.displayName
             : nil
         
-        return HStack(spacing: 8) {
+        return HStack(spacing: 6) {
+            // 列 1: 复选框 (固定宽度 18pt)
             Toggle("", isOn: Binding(
                 get: { isSelected },
                 set: { checked in
@@ -232,36 +234,21 @@ struct MenuBarView: View {
                 }
             ))
             .toggleStyle(.checkbox).labelsHidden()
-            .disabled(uploadEngine.isUploading && (isCurrentlyUploading || queueIndex != nil))
+            .frame(width: 18)
+            .disabled(uploadEngine.isUploading && (isCurrentlyUploading || queueIndex != nil || isPausedItem))
             
+            // 列 2: 媒体图标 (固定宽度 16pt)
             Image(systemName: mediaIconName(for: item.kind))
                 .font(.caption)
                 .foregroundColor(item.isJunk ? .orange : (item.isCorrupt ? .red : .accentColor))
-                .frame(width: 14)
+                .frame(width: 16)
             
+            // 列 3: 文件名与日期/设备标签 (弹性伸缩，绝不挤压右侧固定列)
             VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 4) {
-                    Text(item.filename).font(.system(size: 11, weight: .medium, design: .monospaced)).lineLimit(1)
-                    
-                    if isCurrentlyUploading {
-                        if uploadEngine.isPaused {
-                            badgeTag(text: "⏸️ 已暂停", color: .orange)
-                        } else {
-                            let prog = Int((uploadEngine.currentProgress?.currentFileProgress ?? 0) * 100)
-                            badgeTag(text: "🚀 传输中 \(prog)%", color: .accentColor)
-                        }
-                    } else if let qIdx = queueIndex {
-                        badgeTag(text: "⏳ 排队 #\(qIdx + 1)", color: .orange)
-                    } else if isUploaded {
-                        badgeTag(text: "✅ 已同步", color: .green)
-                    } else if item.isCorrupt {
-                        badgeTag(text: "损坏 0B", color: .red)
-                    } else if item.isJunk {
-                        badgeTag(text: "疑似废片", color: .orange)
-                    } else {
-                        badgeTag(text: "待同步", color: .blue)
-                    }
-                }
+                Text(item.filename)
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
                 
                 HStack(spacing: 4) {
                     if let dev = deviceName {
@@ -270,21 +257,74 @@ struct MenuBarView: View {
                     Text(formattedDate(item.creationDate)).font(.system(size: 9)).foregroundColor(.secondary)
                 }
             }
-            Spacer()
+            .frame(maxWidth: .infinity, alignment: .leading)
             
-            if queueIndex != nil && uploadEngine.isUploading {
-                Button(action: { uploadEngine.prioritize(itemId: item.id, immediate: true) }) {
-                    Text("⚡插队").font(.system(size: 9, weight: .bold))
-                        .padding(.horizontal, 4).padding(.vertical, 2)
-                        .background(Color.orange.opacity(0.15))
-                        .foregroundColor(.orange)
-                        .cornerRadius(3)
+            // 列 4: 状态徽章 (严格定宽 80pt，右对齐，100% 垂直笔直对齐)
+            HStack(spacing: 0) {
+                Spacer(minLength: 0)
+                if isCurrentlyUploading {
+                    if uploadEngine.isPaused {
+                        badgeTag(text: "⏸️ 已暂停", color: .orange)
+                    } else {
+                        let prog = Int((uploadEngine.currentProgress?.currentFileProgress ?? 0) * 100)
+                        badgeTag(text: "🚀 传输 \(prog)%", color: .accentColor)
+                    }
+                } else if isPausedItem {
+                    badgeTag(text: "⏸️ 已暂停", color: .orange)
+                } else if let qIdx = queueIndex {
+                    badgeTag(text: "⏳ 排队 #\(qIdx + 1)", color: .orange)
+                } else if isUploaded {
+                    badgeTag(text: "✅ 已同步", color: .green)
+                } else if item.isCorrupt {
+                    badgeTag(text: "损坏 0B", color: .red)
+                } else if item.isJunk {
+                    badgeTag(text: "疑似废片", color: .orange)
+                } else {
+                    badgeTag(text: "待同步", color: .blue)
                 }
-                .buttonStyle(.plain)
             }
+            .frame(width: 80, alignment: .trailing)
             
+            // 列 5: 行级操作按钮 (严格定宽 54pt，居中对齐；无操作时渲染透明占位防漂移)
+            HStack(spacing: 0) {
+                if isCurrentlyUploading && uploadEngine.isUploading {
+                    Button(action: { uploadEngine.pauseCurrentItemAndProceedNext() }) {
+                        Text("⏸️暂停").font(.system(size: 9, weight: .semibold))
+                            .padding(.horizontal, 4).padding(.vertical, 2)
+                            .background(Color.orange.opacity(0.18))
+                            .foregroundColor(.orange)
+                            .cornerRadius(3)
+                    }
+                    .buttonStyle(.plain)
+                } else if isPausedItem && uploadEngine.isUploading {
+                    Button(action: { uploadEngine.resumeItem(itemId: item.id) }) {
+                        Text("▶️恢复").font(.system(size: 9, weight: .semibold))
+                            .padding(.horizontal, 4).padding(.vertical, 2)
+                            .background(Color.green.opacity(0.18))
+                            .foregroundColor(.green)
+                            .cornerRadius(3)
+                    }
+                    .buttonStyle(.plain)
+                } else if queueIndex != nil && uploadEngine.isUploading {
+                    Button(action: { uploadEngine.prioritize(itemId: item.id, immediate: true) }) {
+                        Text("⚡插队").font(.system(size: 9, weight: .bold))
+                            .padding(.horizontal, 4).padding(.vertical, 2)
+                            .background(Color.orange.opacity(0.18))
+                            .foregroundColor(.orange)
+                            .cornerRadius(3)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Color.clear.frame(width: 54, height: 16)
+                }
+            }
+            .frame(width: 54, alignment: .center)
+            
+            // 列 6: 文件大小 (严格定宽 62pt，右对齐，等宽数字字体)
             Text(formattedBytes(item.sizeBytes))
-                .font(.system(size: 11, weight: .regular, design: .monospaced)).foregroundColor(.secondary)
+                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                .foregroundColor(.secondary)
+                .frame(width: 62, alignment: .trailing)
         }
         .padding(.vertical, 2).padding(.horizontal, 6)
         .background(isCurrentlyUploading ? Color.accentColor.opacity(0.12) : (isSelected ? Color.accentColor.opacity(0.06) : Color.clear))
