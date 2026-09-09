@@ -5,11 +5,11 @@
     <key>CFBundleExecutable</key>
     <string>DJIToDriveApp</string>
     <key>CFBundleIdentifier</key>
-    <string>com.qianliangjun.DJIToDrive</string>
+    <string>com.qianliangjun.DJIToGoogleDrive</string>
     <key>CFBundleName</key>
-    <string>DJIToDrive</string>
+    <string>DJIToGoogleDrive</string>
     <key>CFBundleDisplayName</key>
-    <string>DJIToDrive</string>
+    <string>DJIToGoogleDrive</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundlePackageType</key>

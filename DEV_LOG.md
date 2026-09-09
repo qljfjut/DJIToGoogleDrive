@@ -4,6 +4,37 @@
 
 ---
 
+### 📅 [2026-09-09 16:15] 全局品牌统一为 DJIToGoogleDrive、代码级原生中英国际化 (i18n) 与双语 README 开源发布
+- **操作类型**：`[重命名]` / `[新增]` / `[优化]` / `[文档]`
+- **涉及文件**：
+  - `Sources/DJIToDriveApp/LocalizationManager.swift`（新增，254行，单例中枢驱动中英多语言，支持系统自适应与偏好持久化）
+  - `Sources/DJIToDriveApp/SettingsView.swift`（修改，325行，引入语言切换选择器，全界面国际化）
+  - `Sources/DJIToDriveApp/MenuBarView.swift`（修改，762行，控制面板标题、按钮、状态徽章全域对接 L10n，移除无用函数守住800行上限）
+  - `Sources/DJIToDriveApp/AppDelegate.swift`（修改，290行，窗口标题与系统通知品牌名全面升级为 DJIToGoogleDrive）
+  - `Resources/Info.plist`（修改，包名与应用展示名升级为 DJIToGoogleDrive）
+  - `scripts/package_app.sh`（修改，发布打包产物升级为 DJIToGoogleDrive.app）
+  - `README.md`（修改，英语主页，新增双语导航条、个人网站与 Telegram 社区章节）
+  - `README_zh.md`（新增，简体中文主页，与英文版镜像并设互相导航入口）
+- **改动背景与原理**：
+  - 用户需求：
+    1. 将项目品牌统一明确为 `DJIToGoogleDrive`，突出 Google Drive 专属同步属性；
+    2. README 提供中英双语多语言版本，并附上个人网站与 Telegram 社区联系方式；
+    3. 代码层实现多语言国际化，让应用具备面向全球用户的能力。
+  - 核心架构与机制：
+    1. **原生轻量级 i18n 响应式架构 (`LocalizationManager`)**：
+       - 基于 `@Published public var currentLanguage: AppLanguage` 驱动 SwiftUI 实时无缝重绘；
+       - 提供类型安全文案字典，根据 `isEnglish` 属性输出中文/英文，零外部框架依赖；
+       - `SettingsView` 增加中/英/跟随系统语言选择器，一键即刻刷新界面。
+    2. **物理行数严格收敛**：
+       - `MenuBarView.swift` 经文案精简与死代码剔除后收敛至 762 行，严守 ≤ 800 行铁律。
+    3. **双语文档无缝导航**：
+       - `README.md`（英文）与 `README_zh.md`（中文）顶部互设直达跳转徽章，文末增设「Author & Community」联系专区。
+- **验证结果**：
+  - SPM 官方工具链 Release 编译构建耗时 4.36s，Ad-hoc 签名成功，产出 `DJIToGoogleDrive.app`；
+  - 启动进程并验证活跃（PID 44343），旧版 `DJIToDrive.app` 已彻底清理；
+  - 全项目单文件行数检验：全量源码严格 ≤ 800 行。
+---
+
 ### 📅 [2026-09-09 15:54] 修复上下双向挤压裁切、窗口高度扩容至 645pt 与状态栏图标永久常驻
 - **操作类型**：`[修复]` / `[优化]`
 - **涉及文件**：

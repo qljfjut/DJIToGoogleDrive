@@ -46,7 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// 响应用户在访达/桌面双击 DJIToDrive.app 图标，确保 100% 呼出界面
+    /// 响应用户在访达/桌面双击 DJIToGoogleDrive.app 图标，确保 100% 呼出界面
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if let item = statusItem, item.isVisible, item.button != nil {
             togglePopover()
@@ -200,7 +200,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func makeSymbolImage(name: String) -> NSImage? {
         let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
-        guard let symbol = NSImage(systemSymbolName: name, accessibilityDescription: "DJIToDrive")?.withSymbolConfiguration(config) else {
+        guard let symbol = NSImage(systemSymbolName: name, accessibilityDescription: "DJIToGoogleDrive")?.withSymbolConfiguration(config) else {
             return nil
         }
         let targetSize = NSSize(width: 18, height: 18)
@@ -218,33 +218,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - 弹出面板与独立窗口 (Popover & Window Management)
 
     private func setupPopover() {
-        let popover = NSPopover()
-        popover.contentSize = NSSize(width: 440, height: 645)
-        popover.behavior = .transient
-        popover.animates = true
-        popover.contentViewController = NSHostingController(rootView: MenuBarView())
-        self.popover = popover
+        let pop = NSPopover()
+        pop.contentSize = NSSize(width: 440, height: 645)
+        pop.behavior = .transient
+        pop.contentViewController = NSHostingController(rootView: MenuBarView())
+        self.popover = pop
     }
 
     @objc private func togglePopover() {
-        guard let popover = popover else { return }
-        if popover.isShown {
-            popover.performClose(nil)
+        guard let pop = popover, let btn = statusItem?.button else { return }
+        if pop.isShown {
+            pop.performClose(nil)
         } else {
-            showPopover()
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            pop.show(relativeTo: btn.bounds, of: btn, preferredEdge: .minY)
         }
     }
 
     public func showPopover() {
-        guard let popover = popover, let item = statusItem, item.isVisible, let button = item.button else {
-            showMainWindow()
-            return
-        }
-        if !popover.isShown {
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.makeKey()
-            NSApplication.shared.activate(ignoringOtherApps: true)
-        }
+        guard let pop = popover, let btn = statusItem?.button, !pop.isShown else { return }
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        pop.show(relativeTo: btn.bounds, of: btn, preferredEdge: .minY)
     }
 
     /// 呼出屏幕正中央的独立控制大窗口
@@ -262,7 +256,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             defer: false
         )
         window.center()
-        window.title = "DJIToDrive 控制中心"
+        window.title = LocalizationManager.shared.controlCenterTitle
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: MenuBarView())
         window.makeKeyAndOrderFront(nil)

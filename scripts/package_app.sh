@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ====================================
-# 📁 脚本职责：DJIToDrive 官方发布打包与桌面应用生成脚本
+# 📁 脚本职责：DJIToGoogleDrive 官方发布打包与桌面应用生成脚本
 # 包含：SPM release 编译、多分辨率 Retina 图标转换、.app 结构封装与原生代码重签名
 # 依赖：swift, sips, iconutil, codesign, xattr
 # ====================================
@@ -9,7 +9,7 @@ set -e
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ICON_SRC="$PROJECT_ROOT/Resources/AppIcon.png"
-APP_NAME="DJIToDrive"
+APP_NAME="DJIToGoogleDrive"
 BUNDLE_DIR="$PROJECT_ROOT/$APP_NAME.app"
 DESKTOP_DIR="/Users/qianliangjun/Desktop"
 

@@ -15,6 +15,7 @@ import Ledger
 struct MenuBarView: View {
     @StateObject private var detector = DeviceDetector()
     @ObservedObject private var authManager = AuthManager.shared
+    @ObservedObject private var loc = LocalizationManager.shared
     @StateObject private var uploadEngine = UploadEngine()
     private let scanner = MediaScanner()
     private let ledger = Ledger()
@@ -121,28 +122,28 @@ struct MenuBarView: View {
                 self.selectedItemIds.remove(itemId)
             }
         }
-        .alert("确认彻底删除素材？", isPresented: $deletionHelper.showSingleDeleteConfirm, presenting: deletionHelper.itemToDelete) { item in
-            Button("彻底删除", role: .destructive) {
+        .alert(loc.singleDeleteConfirmTitle, isPresented: $deletionHelper.showSingleDeleteConfirm, presenting: deletionHelper.itemToDelete) { item in
+            Button(loc.deleteConfirmAction, role: .destructive) {
                 deletionHelper.executeSingleDelete(item: item) { freedBytes in
                     handleItemsDeleted(itemIds: [item.id], freedBytes: freedBytes)
                 }
             }
-            Button("取消", role: .cancel) {}
+            Button(loc.cancel, role: .cancel) {}
         } message: { item in
-            Text("文件：\(item.filename)\n大小：\(formattedBytes(item.sizeBytes))\n\n该操作将直接从相机 SD 卡/存储中彻底删除该文件以释放空间，此操作不可撤销！")
+            Text(loc.singleDeleteConfirmMsg(filename: item.filename, sizeStr: formattedBytes(item.sizeBytes)))
         }
-        .alert("确认批量清理素材？", isPresented: $deletionHelper.showBatchDeleteConfirm) {
-            Button("彻底清理 (\(deletionHelper.itemsToBatchDelete.count) 个文件)", role: .destructive) {
+        .alert(loc.batchDeleteConfirmTitle, isPresented: $deletionHelper.showBatchDeleteConfirm) {
+            Button(loc.batchDeleteAction(deletionHelper.itemsToBatchDelete.count), role: .destructive) {
                 let itemsToDelete = deletionHelper.itemsToBatchDelete
                 let ids = Set(itemsToDelete.map(\.id))
                 deletionHelper.executeBatchDelete(items: itemsToDelete) { deletedCount, freedBytes in
                     handleItemsDeleted(itemIds: ids, freedBytes: freedBytes)
                 }
             }
-            Button("取消", role: .cancel) {}
+            Button(loc.cancel, role: .cancel) {}
         } message: {
             let totalSize = deletionHelper.itemsToBatchDelete.reduce(0) { $0 + $1.sizeBytes }
-            Text("即将从相机 SD 卡中彻底删除 \(deletionHelper.itemsToBatchDelete.count) 个文件，预计释放 \(formattedBytes(totalSize)) 空间！\n\n此操作不可撤销，请确认所选文件均已安全备份至 Google Drive。")
+            Text(loc.batchDeleteConfirmMsg(count: deletionHelper.itemsToBatchDelete.count, sizeStr: formattedBytes(totalSize)))
         }
     }
 
@@ -160,17 +161,17 @@ struct MenuBarView: View {
             }
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text("DJIToDrive").font(.headline).fontWeight(.bold)
+                    Text(loc.appName).font(.headline).fontWeight(.bold)
                     Text("v1.2").font(.system(size: 9, weight: .bold))
                         .padding(.horizontal, 4).padding(.vertical, 1)
                         .background(Color.secondary.opacity(0.15)).cornerRadius(3)
                 }
-                Text(authManager.isAuthenticated ? "Google Drive 已连接" : "Google 账号未连接")
+                Text(authManager.isAuthenticated ? loc.googleDriveConnected : loc.googleDriveNotConnected)
                     .font(.caption2).foregroundColor(authManager.isAuthenticated ? .secondary : .orange)
             }
             Spacer()
             Circle().fill(hasActiveDevice ? Color.green : Color.orange).frame(width: 8, height: 8)
-            Text(hasActiveDevice ? "\(detector.connectedDevices.count) 个存储就绪" : "等待连接")
+            Text(hasActiveDevice ? loc.storageReadyCount(detector.connectedDevices.count) : loc.waitingConnection)
                 .font(.caption2).foregroundColor(.secondary)
         }
     }
@@ -184,9 +185,8 @@ struct MenuBarView: View {
                     Image(systemName: "cable.connector.slash")
                         .font(.title2).foregroundColor(.secondary).frame(width: 26)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("未检测到 DJI 设备").font(.subheadline).fontWeight(.semibold)
-                        Text("请连接 Pocket 3/4、360 全景相机或插入 TF/SD 存储卡")
-                            .font(.caption2).foregroundColor(.secondary)
+                        Text(loc.noDeviceDetected).font(.subheadline).fontWeight(.semibold)
+                        Text(loc.noDeviceSubtext).font(.caption2).foregroundColor(.secondary)
                     }
                     Spacer()
                 }
@@ -210,7 +210,7 @@ struct MenuBarView: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(dev.displayName).font(.system(size: 12, weight: .semibold))
-                    Text(isSD ? "外置存储卡" : "机身存储")
+                    Text(isSD ? loc.externalCard : loc.internalStorage)
                         .font(.system(size: 9, weight: .medium))
                         .padding(.horizontal, 4).padding(.vertical, 1)
                         .background(isSD ? Color.green.opacity(0.15) : Color.blue.opacity(0.15))
@@ -224,10 +224,10 @@ struct MenuBarView: View {
                 if isScanning {
                     ProgressView().scaleEffect(0.6)
                 } else if let res = result {
-                    Text("\(res.items.count) 个素材").font(.system(size: 11, weight: .semibold))
+                    Text(loc.mediaCount(res.items.count)).font(.system(size: 11, weight: .semibold))
                     Text(formattedBytes(res.totalSizeBytes)).font(.system(size: 10)).foregroundColor(.secondary)
                 } else {
-                    Text("等待扫描").font(.system(size: 10)).foregroundColor(.secondary)
+                    Text(loc.waitingScan).font(.system(size: 10)).foregroundColor(.secondary)
                 }
             }
         }
@@ -241,23 +241,23 @@ struct MenuBarView: View {
         VStack(spacing: 4) {
             HStack {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("素材清单").font(.caption).fontWeight(.semibold)
-                    Text("已选 \(selectedItems.count) / \(allScannedItems.count) 项 (\(formattedBytes(selectedTotalBytes)))")
+                    Text(loc.mediaChecklistTitle).font(.caption).fontWeight(.semibold)
+                    Text(loc.selectedItemsCount(selectedItems.count, total: allScannedItems.count, bytesStr: formattedBytes(selectedTotalBytes)))
                         .font(.system(size: 10)).foregroundColor(.secondary)
                 }
                 Spacer()
                 HStack(spacing: 4) {
-                    Button("全选") { selectAllItems() }.buttonStyle(.bordered).controlSize(.mini)
-                    Button("全不选") { deselectAllItems() }.buttonStyle(.bordered).controlSize(.mini)
-                    Button("仅待同步") { selectOnlyValidNewItems() }.buttonStyle(.bordered).controlSize(.mini)
-                    Button("选已同步") { selectOnlyUploadedItems() }.buttonStyle(.bordered).controlSize(.mini)
+                    Button(loc.selectAll) { selectAllItems() }.buttonStyle(.bordered).controlSize(.mini)
+                    Button(loc.deselectAll) { deselectAllItems() }.buttonStyle(.bordered).controlSize(.mini)
+                    Button(loc.onlyNewValid) { selectOnlyValidNewItems() }.buttonStyle(.bordered).controlSize(.mini)
+                    Button(loc.onlyUploaded) { selectOnlyUploadedItems() }.buttonStyle(.bordered).controlSize(.mini)
                 }
             }
             
             if !selectedDeletableItems.isEmpty || !allUploadedItems.isEmpty {
                 HStack {
                     if !selectedDeletableItems.isEmpty {
-                        Text("可清理勾选: \(selectedDeletableItems.count) 项 (\(formattedBytes(selectedDeletableItems.reduce(0) { $0 + $1.sizeBytes })))")
+                        Text(loc.deletableCountLabel(selectedDeletableItems.count, bytesStr: formattedBytes(selectedDeletableItems.reduce(0) { $0 + $1.sizeBytes })))
                             .font(.system(size: 9)).foregroundColor(.secondary)
                         Spacer()
                         Button(action: {
@@ -265,15 +265,13 @@ struct MenuBarView: View {
                         }) {
                             HStack(spacing: 2) {
                                 Image(systemName: "trash.fill")
-                                Text("清理勾选 (\(selectedDeletableItems.count))")
+                                Text(loc.deleteSelectedBtn(selectedDeletableItems.count))
                             }
                             .font(.system(size: 9, weight: .semibold))
                         }
-                        .buttonStyle(.bordered)
-                        .tint(.red)
-                        .controlSize(.mini)
+                        .buttonStyle(.bordered).tint(.red).controlSize(.mini)
                     } else if !allUploadedItems.isEmpty && !uploadEngine.isUploading {
-                        Text("已同步可清理: \(allUploadedItems.count) 项 (\(formattedBytes(allUploadedItems.reduce(0) { $0 + $1.sizeBytes })))")
+                        Text(loc.deletableCountLabel(allUploadedItems.count, bytesStr: formattedBytes(allUploadedItems.reduce(0) { $0 + $1.sizeBytes })))
                             .font(.system(size: 9)).foregroundColor(.secondary)
                         Spacer()
                         Button(action: {
@@ -281,12 +279,11 @@ struct MenuBarView: View {
                         }) {
                             HStack(spacing: 2) {
                                 Image(systemName: "trash")
-                                Text("一键清理所有已同步 (\(allUploadedItems.count))")
+                                Text(loc.deleteUploadedBtn(allUploadedItems.count))
                             }
                             .font(.system(size: 9))
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.mini)
+                        .buttonStyle(.bordered).controlSize(.mini)
                     }
                 }
             }
@@ -373,23 +370,23 @@ struct MenuBarView: View {
                 Spacer(minLength: 0)
                 if isCurrentlyUploading {
                     if uploadEngine.isPaused {
-                        badgeTag(text: "⏸️ 已暂停", color: .orange)
+                        badgeTag(text: loc.badgePaused, color: .orange)
                     } else {
                         let prog = Int((uploadEngine.currentProgress?.currentFileProgress ?? 0) * 100)
-                        badgeTag(text: "🚀 传输 \(prog)%", color: .accentColor)
+                        badgeTag(text: "\(loc.badgeUploading) \(prog)%", color: .accentColor)
                     }
                 } else if isPausedItem {
-                    badgeTag(text: "⏸️ 已暂停", color: .orange)
+                    badgeTag(text: loc.badgePaused, color: .orange)
                 } else if let qIdx = queueIndex {
-                    badgeTag(text: "⏳ 排队 #\(qIdx + 1)", color: .orange)
+                    badgeTag(text: loc.badgeQueued(qIdx + 1), color: .orange)
                 } else if isUploaded {
-                    badgeTag(text: "✅ 已同步", color: .green)
+                    badgeTag(text: loc.badgeSynced, color: .green)
                 } else if item.isCorrupt {
-                    badgeTag(text: "损坏 0B", color: .red)
+                    badgeTag(text: loc.badgeCorrupt, color: .red)
                 } else if item.isJunk {
-                    badgeTag(text: "疑似废片", color: .orange)
+                    badgeTag(text: loc.badgeJunk, color: .orange)
                 } else {
-                    badgeTag(text: "待同步", color: .blue)
+                    badgeTag(text: loc.badgePending, color: .blue)
                 }
             }
             .frame(width: 80, alignment: .trailing)
@@ -398,38 +395,30 @@ struct MenuBarView: View {
             HStack(spacing: 0) {
                 if isCurrentlyUploading && uploadEngine.isUploading {
                     Button(action: { uploadEngine.pauseCurrentItemAndProceedNext() }) {
-                        Text("⏸️暂停").font(.system(size: 9, weight: .semibold))
+                        Text(loc.pauseBtn).font(.system(size: 9, weight: .semibold))
                             .padding(.horizontal, 4).padding(.vertical, 2)
-                            .background(Color.orange.opacity(0.18))
-                            .foregroundColor(.orange)
-                            .cornerRadius(3)
+                            .background(Color.orange.opacity(0.18)).foregroundColor(.orange).cornerRadius(3)
                     }
                     .buttonStyle(.plain)
                 } else if isPausedItem && uploadEngine.isUploading {
                     Button(action: { uploadEngine.resumeItem(itemId: item.id) }) {
-                        Text("▶️恢复").font(.system(size: 9, weight: .semibold))
+                        Text(loc.resumeBtn).font(.system(size: 9, weight: .semibold))
                             .padding(.horizontal, 4).padding(.vertical, 2)
-                            .background(Color.green.opacity(0.18))
-                            .foregroundColor(.green)
-                            .cornerRadius(3)
+                            .background(Color.green.opacity(0.18)).foregroundColor(.green).cornerRadius(3)
                     }
                     .buttonStyle(.plain)
                 } else if queueIndex != nil && uploadEngine.isUploading {
                     Button(action: { uploadEngine.prioritize(itemId: item.id, immediate: true) }) {
-                        Text("⚡插队").font(.system(size: 9, weight: .bold))
+                        Text(loc.prioritizeBtn).font(.system(size: 9, weight: .bold))
                             .padding(.horizontal, 4).padding(.vertical, 2)
-                            .background(Color.orange.opacity(0.18))
-                            .foregroundColor(.orange)
-                            .cornerRadius(3)
+                            .background(Color.orange.opacity(0.18)).foregroundColor(.orange).cornerRadius(3)
                     }
                     .buttonStyle(.plain)
                 } else if isUploaded || item.isJunk || item.isCorrupt {
                     Button(action: { deletionHelper.requestDelete(item: item) }) {
-                        Text("🗑️删除").font(.system(size: 9, weight: .semibold))
+                        Text(loc.deleteBtn).font(.system(size: 9, weight: .semibold))
                             .padding(.horizontal, 4).padding(.vertical, 2)
-                            .background(Color.red.opacity(0.15))
-                            .foregroundColor(.red)
-                            .cornerRadius(3)
+                            .background(Color.red.opacity(0.15)).foregroundColor(.red).cornerRadius(3)
                     }
                     .buttonStyle(.plain)
                 } else {
@@ -471,15 +460,15 @@ struct MenuBarView: View {
                     ProgressView(value: progress.currentFileProgress, total: 1.0).progressViewStyle(.linear)
                     
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 4) {
-                        metricBox(title: "📹 视频进度", value: "\(progress.currentFileIndex) / \(progress.totalFiles) 个")
-                        metricBox(title: "📊 总进度流量", value: "\(formattedBytes(progress.totalUploadedBytes)) / \(formattedBytes(progress.totalBytesToUpload)) (\(Int(progress.overallProgress * 100))%)")
-                        metricBox(title: "⚡ 实时网速", value: formattedSpeed(progress.speedBytesPerSec))
-                        metricBox(title: "⏱️ 预估剩余", value: formattedETA(progress.estimatedSecondsRemaining))
+                        metricBox(title: loc.videoProgressTitle, value: "\(progress.currentFileIndex) / \(progress.totalFiles)")
+                        metricBox(title: loc.overallTrafficTitle, value: "\(formattedBytes(progress.totalUploadedBytes)) / \(formattedBytes(progress.totalBytesToUpload)) (\(Int(progress.overallProgress * 100))%)")
+                        metricBox(title: loc.realTimeSpeedTitle, value: formattedSpeed(progress.speedBytesPerSec))
+                        metricBox(title: loc.estimatedRemainingTitle, value: formattedETA(progress.estimatedSecondsRemaining))
                     }
                     
                     HStack(spacing: 4) {
                         Image(systemName: "cup.and.saucer.fill").font(.system(size: 8)).foregroundColor(.orange)
-                        Text("防休眠保护运行中 (屏幕可熄灭)").font(.system(size: 9)).foregroundColor(.secondary)
+                        Text(loc.sleepProtectionActive).font(.system(size: 9)).foregroundColor(.secondary)
                         Spacer()
                     }
                     .padding(.top, 1)
@@ -500,15 +489,13 @@ struct MenuBarView: View {
                     } else {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("云端归档目标").font(.system(size: 9)).foregroundColor(.secondary)
-                                Text(authManager.getTargetFolder())
-                                    .font(.caption2).fontWeight(.medium).lineLimit(1)
+                                Text(loc.cloudTargetFolder).font(.system(size: 9)).foregroundColor(.secondary)
+                                Text(authManager.getTargetFolder()).font(.caption2).fontWeight(.medium).lineLimit(1)
                             }
                             Spacer()
                             VStack(alignment: .trailing, spacing: 2) {
-                                Text("废片过滤阈值").font(.system(size: 9)).foregroundColor(.secondary)
-                                Text("< \(authManager.getMinVideoSizeMB()) MB 自动排查")
-                                    .font(.caption2).fontWeight(.medium)
+                                Text(loc.junkFilterThreshold).font(.system(size: 9)).foregroundColor(.secondary)
+                                Text(loc.junkFilterDesc(authManager.getMinVideoSizeMB())).font(.caption2).fontWeight(.medium)
                             }
                         }
                     }
@@ -536,7 +523,7 @@ struct MenuBarView: View {
                     Button(role: .destructive, action: { uploadEngine.cancel() }) {
                         HStack {
                             Image(systemName: "xmark.circle.fill")
-                            Text("取消全部")
+                            Text(loc.cancelAll)
                         }
                         .frame(maxWidth: .infinity).padding(.vertical, 4)
                     }
@@ -546,7 +533,7 @@ struct MenuBarView: View {
                         Button(action: { uploadEngine.resume() }) {
                             HStack {
                                 Image(systemName: "play.fill")
-                                Text("继续上传")
+                                Text(loc.continueUpload)
                             }
                             .frame(maxWidth: .infinity).padding(.vertical, 4)
                         }
@@ -556,7 +543,7 @@ struct MenuBarView: View {
                         Button(action: { uploadEngine.pause() }) {
                             HStack {
                                 Image(systemName: "pause.fill")
-                                Text("暂停")
+                                Text(loc.pauseUpload)
                             }
                             .frame(maxWidth: .infinity).padding(.vertical, 4)
                         }
@@ -578,18 +565,18 @@ struct MenuBarView: View {
     }
 
     private var syncButtonTitle: String {
-        if !authManager.isAuthenticated { return "请先连接 Google 账号以开启同步" }
-        if detector.connectedDevices.isEmpty { return "请插入 DJI 设备" }
-        if allScannedItems.isEmpty { return "当前无媒体文件可同步" }
-        if selectedItems.isEmpty { return "请在上方列表中勾选要同步的文件" }
-        return "🚀 开始同步选中的 \(selectedItems.count) 个素材 (共 \(formattedBytes(selectedTotalBytes)))"
+        if !authManager.isAuthenticated { return loc.connectAccountFirst }
+        if detector.connectedDevices.isEmpty { return loc.insertDeviceFirst }
+        if allScannedItems.isEmpty { return loc.noMediaFound }
+        if selectedItems.isEmpty { return loc.selectFilesFirst }
+        return loc.startSyncTitle(count: selectedItems.count, bytesStr: formattedBytes(selectedTotalBytes))
     }
 
     // MARK: - 7. 底部辅助栏
 
     private var footerSection: some View {
         HStack {
-            Button("偏好设置与 Google 账号...") { openPreferences() }
+            Button(loc.preferencesAndAccount) { openPreferences() }
                 .buttonStyle(.plain).font(.caption).foregroundColor(.secondary)
             Spacer()
             Button(action: scanDeviceManually) {
@@ -598,7 +585,7 @@ struct MenuBarView: View {
             }
             .buttonStyle(.plain).disabled(isScanning || uploadEngine.isUploading)
             Spacer()
-            Button("退出") { NSApplication.shared.terminate(nil) }
+            Button(loc.quit) { NSApplication.shared.terminate(nil) }
                 .buttonStyle(.plain).font(.caption).foregroundColor(.secondary)
         }
     }
@@ -634,7 +621,6 @@ struct MenuBarView: View {
                 if await ledger.isUploaded(filename: item.filename, fileSize: item.sizeBytes) {
                     newUploadedIds.insert(item.id)
                 }
-                // 首次扫描到：默认勾选非废片、非损坏且尚未同步的健康素材
                 if !selectedItemIds.contains(item.id) && !newUploadedIds.contains(item.id) && !item.isJunk && !item.isCorrupt {
                     newSelected.insert(item.id)
                 }
@@ -672,12 +658,6 @@ struct MenuBarView: View {
         )
     }
 
-    private func excludeJunkItems() {
-        for item in allScannedItems where item.isJunk || item.isCorrupt {
-            selectedItemIds.remove(item.id)
-        }
-    }
-
     private func handleItemsDeleted(itemIds: Set<String>, freedBytes: Int64) {
         selectedItemIds.subtract(itemIds)
         uploadedItemIds.subtract(itemIds)
@@ -698,7 +678,7 @@ struct MenuBarView: View {
             )
         }
         
-        self.uploadSuccessMessage = "🗑️ 成功释放 \(formattedBytes(freedBytes)) 相机存储空间！"
+        self.uploadSuccessMessage = loc.freedSpaceToast(formattedBytes(freedBytes))
         
         Task {
             await scanAllConnectedVolumes()
@@ -721,22 +701,26 @@ struct MenuBarView: View {
             do {
                 let result = try await uploadEngine.uploadItems(itemsToUpload)
                 await MainActor.run {
-                    self.uploadSuccessMessage = "🎉 同步完成！已上传 \(result.uploadedCount) 个，跳过 \(result.skippedCount) 个，传输流量 \(self.formattedBytes(result.totalBytesUploaded))。"
+                    self.uploadSuccessMessage = loc.syncCompletedToast(
+                        count: result.uploadedCount,
+                        skipped: result.skippedCount,
+                        bytesStr: self.formattedBytes(result.totalBytesUploaded)
+                    )
                     AppDelegate.sendNotification(
-                        title: "DJIToDrive 素材同步完成",
-                        body: "\(result.uploadedCount) 个素材 (\(self.formattedBytes(result.totalBytesUploaded))) 已导入 Google Drive！"
+                        title: "\(loc.appName) " + (loc.isEnglish ? "Media Sync Completed" : "素材同步完成"),
+                        body: "\(result.uploadedCount) " + (loc.isEnglish ? "items imported to Google Drive" : "个素材已导入 Google Drive！")
                     )
                 }
                 await scanAllConnectedVolumes()
             } catch {
                 await MainActor.run {
                     if case UploadError.cancelled = error {
-                        self.uploadErrorMessage = "上传已由用户取消。"
+                        self.uploadErrorMessage = loc.isEnglish ? "Upload cancelled by user." : "上传已由用户取消。"
                     } else {
-                        self.uploadErrorMessage = "上传失败: \(error.localizedDescription)"
+                        self.uploadErrorMessage = (loc.isEnglish ? "Upload failed: " : "上传失败: ") + error.localizedDescription
                         AppDelegate.sendNotification(
-                            title: "DJIToDrive 同步未完成",
-                            body: "遇到问题: \(error.localizedDescription)"
+                            title: "\(loc.appName) " + (loc.isEnglish ? "Sync Incomplete" : "同步未完成"),
+                            body: error.localizedDescription
                         )
                     }
                 }
@@ -761,7 +745,7 @@ struct MenuBarView: View {
             backing: .buffered, defer: false
         )
         window.center()
-        window.title = "DJIToDrive 偏好设置"
+        window.title = "\(loc.appName) \(loc.preferencesTitle)"
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: SettingsView())
         window.makeKeyAndOrderFront(nil)
