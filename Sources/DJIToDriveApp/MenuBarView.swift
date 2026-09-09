@@ -30,13 +30,58 @@ struct MenuBarView: View {
     @State private var uploadErrorMessage: String?
     @State private var uploadSuccessMessage: String?
     @State private var settingsWindow: NSWindow?
+    @StateObject private var deletionHelper = MediaDeletionHelper()
 
     // MARK: - 聚合计算属性
 
     private var hasActiveDevice: Bool { !detector.connectedDevices.isEmpty }
 
+    /// 多阶梯沉底排序：正在传输 ➔ 排队中 ➔ 已暂停 ➔ 待同步 ➔ ✅ 已同步沉底 ➔ 损坏0B/废片沉底
     private var allScannedItems: [ScannedMediaItem] {
-        detector.connectedDevices.flatMap { volumeScanResults[$0.id]?.items ?? [] }
+        let raw = detector.connectedDevices.flatMap { volumeScanResults[$0.id]?.items ?? [] }
+        return raw.sorted { a, b in
+            let rankA = itemSortRank(a)
+            let rankB = itemSortRank(b)
+            if rankA != rankB {
+                return rankA < rankB
+            }
+            if rankA == 1 {
+                let idxA = uploadEngine.queuedItemIds.firstIndex(of: a.id) ?? Int.max
+                let idxB = uploadEngine.queuedItemIds.firstIndex(of: b.id) ?? Int.max
+                return idxA < idxB
+            }
+            return a.creationDate > b.creationDate
+        }
+    }
+
+    private func itemSortRank(_ item: ScannedMediaItem) -> Int {
+        if item.id == uploadEngine.currentUploadingItemId {
+            return 0 // 🚀 传输中
+        }
+        if uploadEngine.queuedItemIds.contains(item.id) {
+            return 1 // ⏳ 排队中
+        }
+        if uploadEngine.pausedItemIds.contains(item.id) {
+            return 2 // ⏸️ 已暂停
+        }
+        let isUploaded = uploadedItemIds.contains(item.id) || uploadEngine.completedItemIds.contains(item.id)
+        if !isUploaded && !item.isJunk && !item.isCorrupt {
+            return 3 // 待同步
+        }
+        if isUploaded {
+            return 4 // ✅ 已同步 (列表下方)
+        }
+        return 5 // 损坏0B / 废片 (列表最底)
+    }
+
+    private var allUploadedItems: [ScannedMediaItem] {
+        allScannedItems.filter { uploadedItemIds.contains($0.id) || uploadEngine.completedItemIds.contains($0.id) }
+    }
+
+    private var selectedDeletableItems: [ScannedMediaItem] {
+        selectedItems.filter {
+            uploadedItemIds.contains($0.id) || uploadEngine.completedItemIds.contains($0.id) || $0.isJunk || $0.isCorrupt
+        }
     }
 
     private var selectedItems: [ScannedMediaItem] {
@@ -73,6 +118,29 @@ struct MenuBarView: View {
                 self.uploadedItemIds.insert(itemId)
                 self.selectedItemIds.remove(itemId)
             }
+        }
+        .alert("确认彻底删除素材？", isPresented: $deletionHelper.showSingleDeleteConfirm, presenting: deletionHelper.itemToDelete) { item in
+            Button("彻底删除", role: .destructive) {
+                deletionHelper.executeSingleDelete(item: item) { freedBytes in
+                    handleItemsDeleted(itemIds: [item.id], freedBytes: freedBytes)
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: { item in
+            Text("文件：\(item.filename)\n大小：\(formattedBytes(item.sizeBytes))\n\n该操作将直接从相机 SD 卡/存储中彻底删除该文件以释放空间，此操作不可撤销！")
+        }
+        .alert("确认批量清理素材？", isPresented: $deletionHelper.showBatchDeleteConfirm) {
+            Button("彻底清理 (\(deletionHelper.itemsToBatchDelete.count) 个文件)", role: .destructive) {
+                let itemsToDelete = deletionHelper.itemsToBatchDelete
+                let ids = Set(itemsToDelete.map(\.id))
+                deletionHelper.executeBatchDelete(items: itemsToDelete) { deletedCount, freedBytes in
+                    handleItemsDeleted(itemIds: ids, freedBytes: freedBytes)
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            let totalSize = deletionHelper.itemsToBatchDelete.reduce(0) { $0 + $1.sizeBytes }
+            Text("即将从相机 SD 卡中彻底删除 \(deletionHelper.itemsToBatchDelete.count) 个文件，预计释放 \(formattedBytes(totalSize)) 空间！\n\n此操作不可撤销，请确认所选文件均已安全备份至 Google Drive。")
         }
     }
 
@@ -168,18 +236,57 @@ struct MenuBarView: View {
     // MARK: - 3. 媒体筛选工具栏
 
     private var mediaSelectionToolbar: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 1) {
-                Text("素材勾选清单").font(.caption).fontWeight(.semibold)
-                Text("已勾选 \(selectedItems.count) / \(allScannedItems.count) 个 (\(formattedBytes(selectedTotalBytes)))")
-                    .font(.system(size: 10)).foregroundColor(.secondary)
+        VStack(spacing: 4) {
+            HStack {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("素材清单").font(.caption).fontWeight(.semibold)
+                    Text("已选 \(selectedItems.count) / \(allScannedItems.count) 项 (\(formattedBytes(selectedTotalBytes)))")
+                        .font(.system(size: 10)).foregroundColor(.secondary)
+                }
+                Spacer()
+                HStack(spacing: 4) {
+                    Button("全选") { selectAllItems() }.buttonStyle(.bordered).controlSize(.mini)
+                    Button("全不选") { deselectAllItems() }.buttonStyle(.bordered).controlSize(.mini)
+                    Button("仅待同步") { selectOnlyValidNewItems() }.buttonStyle(.bordered).controlSize(.mini)
+                    Button("选已同步") { selectOnlyUploadedItems() }.buttonStyle(.bordered).controlSize(.mini)
+                }
             }
-            Spacer()
-            HStack(spacing: 4) {
-                Button("全选") { selectAllItems() }.buttonStyle(.bordered).controlSize(.mini)
-                Button("全不选") { deselectAllItems() }.buttonStyle(.bordered).controlSize(.mini)
-                Button("仅新素材") { selectOnlyValidNewItems() }.buttonStyle(.bordered).controlSize(.mini)
-                Button("排除废片") { excludeJunkItems() }.buttonStyle(.bordered).controlSize(.mini)
+            
+            if !selectedDeletableItems.isEmpty || !allUploadedItems.isEmpty {
+                HStack {
+                    if !selectedDeletableItems.isEmpty {
+                        Text("可清理勾选: \(selectedDeletableItems.count) 项 (\(formattedBytes(selectedDeletableItems.reduce(0) { $0 + $1.sizeBytes })))")
+                            .font(.system(size: 9)).foregroundColor(.secondary)
+                        Spacer()
+                        Button(action: {
+                            deletionHelper.requestBatchDelete(items: selectedDeletableItems)
+                        }) {
+                            HStack(spacing: 2) {
+                                Image(systemName: "trash.fill")
+                                Text("清理勾选 (\(selectedDeletableItems.count))")
+                            }
+                            .font(.system(size: 9, weight: .semibold))
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.red)
+                        .controlSize(.mini)
+                    } else if !allUploadedItems.isEmpty && !uploadEngine.isUploading {
+                        Text("已同步可清理: \(allUploadedItems.count) 项 (\(formattedBytes(allUploadedItems.reduce(0) { $0 + $1.sizeBytes })))")
+                            .font(.system(size: 9)).foregroundColor(.secondary)
+                        Spacer()
+                        Button(action: {
+                            deletionHelper.requestBatchDelete(items: allUploadedItems)
+                        }) {
+                            HStack(spacing: 2) {
+                                Image(systemName: "trash")
+                                Text("一键清理所有已同步 (\(allUploadedItems.count))")
+                            }
+                            .font(.system(size: 9))
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                    }
+                }
             }
         }
     }
@@ -311,6 +418,15 @@ struct MenuBarView: View {
                             .padding(.horizontal, 4).padding(.vertical, 2)
                             .background(Color.orange.opacity(0.18))
                             .foregroundColor(.orange)
+                            .cornerRadius(3)
+                    }
+                    .buttonStyle(.plain)
+                } else if isUploaded || item.isJunk || item.isCorrupt {
+                    Button(action: { deletionHelper.requestDelete(item: item) }) {
+                        Text("🗑️删除").font(.system(size: 9, weight: .semibold))
+                            .padding(.horizontal, 4).padding(.vertical, 2)
+                            .background(Color.red.opacity(0.15))
+                            .foregroundColor(.red)
                             .cornerRadius(3)
                     }
                     .buttonStyle(.plain)
@@ -533,13 +649,50 @@ struct MenuBarView: View {
 
     private func selectOnlyValidNewItems() {
         selectedItemIds = Set(
-            allScannedItems.filter { !uploadedItemIds.contains($0.id) && !$0.isJunk && !$0.isCorrupt }.map(\.id)
+            allScannedItems.filter {
+                !uploadedItemIds.contains($0.id) && !uploadEngine.completedItemIds.contains($0.id) && !$0.isJunk && !$0.isCorrupt
+            }.map(\.id)
+        )
+    }
+
+    private func selectOnlyUploadedItems() {
+        selectedItemIds = Set(
+            allScannedItems.filter {
+                uploadedItemIds.contains($0.id) || uploadEngine.completedItemIds.contains($0.id)
+            }.map(\.id)
         )
     }
 
     private func excludeJunkItems() {
         for item in allScannedItems where item.isJunk || item.isCorrupt {
             selectedItemIds.remove(item.id)
+        }
+    }
+
+    private func handleItemsDeleted(itemIds: Set<String>, freedBytes: Int64) {
+        selectedItemIds.subtract(itemIds)
+        uploadedItemIds.subtract(itemIds)
+        
+        for (devId, res) in volumeScanResults {
+            let remaining = res.items.filter { !itemIds.contains($0.id) }
+            let newTotal = remaining.reduce(0) { $0 + $1.sizeBytes }
+            let newJunkCount = remaining.filter { $0.isJunk }.count
+            let newJunkBytes = remaining.filter { $0.isJunk }.reduce(0) { $0 + $1.sizeBytes }
+            volumeScanResults[devId] = ScanResult(
+                items: remaining,
+                totalSizeBytes: newTotal,
+                ignoredCount: res.ignoredCount,
+                ignoredSizeBytes: res.ignoredSizeBytes,
+                junkCount: newJunkCount,
+                junkSizeBytes: newJunkBytes,
+                scanDurationSeconds: res.scanDurationSeconds
+            )
+        }
+        
+        self.uploadSuccessMessage = "🗑️ 成功释放 \(formattedBytes(freedBytes)) 相机存储空间！"
+        
+        Task {
+            await scanAllConnectedVolumes()
         }
     }
 
@@ -607,51 +760,10 @@ struct MenuBarView: View {
         self.settingsWindow = window
     }
 
-    private func loadAppIcon() -> NSImage? {
-        if let path = Bundle.main.path(forResource: "AppIcon", ofType: "icns"),
-           let img = NSImage(contentsOfFile: path) {
-            return img
-        }
-        return NSImage(named: NSImage.applicationIconName)
-    }
-
-    private func mediaIconName(for kind: MediaKind) -> String {
-        switch kind {
-        case .video: return "video.fill"
-        case .rawPhoto: return "camera.macro"
-        case .jpegPhoto: return "photo.fill"
-        case .audioTrack: return "waveform"
-        case .subtitleMeta: return "captions.bubble.fill"
-        }
-    }
-
-    private func formattedDate(_ date: Date) -> String {
-        let df = DateFormatter()
-        df.dateFormat = "MM-dd HH:mm"
-        return df.string(from: date)
-    }
-
-    private func formattedBytes(_ bytes: Int64) -> String {
-        let formatter = ByteCountFormatter()
-        formatter.allowedUnits = [.useAll]
-        formatter.countStyle = .file
-        return formatter.string(fromByteCount: bytes)
-    }
-
-    private func formattedSpeed(_ bytesPerSec: Double) -> String {
-        if bytesPerSec <= 0 { return "-- MB/s" }
-        let mbPerSec = bytesPerSec / (1024.0 * 1024.0)
-        return mbPerSec < 0.1 ? String(format: "%.1f KB/s", bytesPerSec / 1024.0) : String(format: "%.1f MB/s", mbPerSec)
-    }
-
-    private func formattedETA(_ seconds: Double?) -> String {
-        guard let sec = seconds, sec > 0, !sec.isInfinite, !sec.isNaN else { return "--" }
-        let totalSec = Int(sec)
-        let hours = totalSec / 3600
-        let minutes = (totalSec % 3600) / 60
-        let remainingSec = totalSec % 60
-        if hours > 0 { return "\(hours)h \(minutes)m" }
-        if minutes > 0 { return "\(minutes)m \(remainingSec)s" }
-        return "\(remainingSec)s"
-    }
+    private func loadAppIcon() -> NSImage? { AppFormatters.loadAppIcon() }
+    private func mediaIconName(for kind: MediaKind) -> String { AppFormatters.mediaIconName(for: kind) }
+    private func formattedDate(_ date: Date) -> String { AppFormatters.formattedDate(date) }
+    private func formattedBytes(_ bytes: Int64) -> String { AppFormatters.formattedBytes(bytes) }
+    private func formattedSpeed(_ bytesPerSec: Double) -> String { AppFormatters.formattedSpeed(bytesPerSec) }
+    private func formattedETA(_ seconds: Double?) -> String { AppFormatters.formattedETA(seconds) }
 }
