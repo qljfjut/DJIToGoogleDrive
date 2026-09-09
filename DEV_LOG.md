@@ -4,6 +4,17 @@
 
 ---
 
+### 📅 [2026-09-09 16:31] 生成 GitHub Releases v1.2.0 官方二进制发布包
+- **操作类型**：`[发布]`
+- **涉及文件**：
+  - `/Users/qianliangjun/Desktop/DJIToGoogleDrive-v1.2.0-macOS.zip`（2.1MB，原生 Release 官方发布包）
+- **改动背景与原理**：
+  - 采用 macOS 原生 `ditto` 工具链对签名后的 `DJIToGoogleDrive.app` 进行高兼容性无损压缩；
+  - 完整保留代码签名、权限属性与 Retina 图标资源，供用户直接在 GitHub Releases 页面拖拽上传发布。
+- **验证结果**：
+  - 生成 `DJIToGoogleDrive-v1.2.0-macOS.zip`（2.1MB），存放于桌面，就绪可传。
+---
+
 ### 📅 [2026-09-09 16:25] 打包生成全新 DJIToGoogleDrive 纯净无账号跨电脑交付包
 - **操作类型**：`[新增]` / `[发布]`
 - **涉及文件**：
