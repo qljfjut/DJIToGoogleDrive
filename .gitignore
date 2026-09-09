@@ -45,3 +45,5 @@ client_secret*.json
 
 # 独立导出发布专区
 DJIToDrive_Clean_Export/
+DJIToGoogleDrive_Clean_Export/
+*_Clean_Export/

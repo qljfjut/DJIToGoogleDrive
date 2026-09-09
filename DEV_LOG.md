@@ -4,6 +4,23 @@
 
 ---
 
+### 📅 [2026-09-09 16:25] 打包生成全新 DJIToGoogleDrive 纯净无账号跨电脑交付包
+- **操作类型**：`[新增]` / `[发布]`
+- **涉及文件**：
+  - `DJIToGoogleDrive_Clean_Export/DJIToGoogleDrive.app`（独立原生桌面应用，已做 Ad-hoc 签名与隔离清除）
+  - `DJIToGoogleDrive_Clean_Export/DJIToGoogleDrive_纯净源码包.zip`（2.7MB，最新源码全套归档）
+  - `DJIToGoogleDrive_Clean_Export/新电脑开箱与配置指南.txt`（新机部署放行与中英双语配置指引）
+  - `.gitignore`（修改，永久忽略 DJIToGoogleDrive_Clean_Export/ 避免污染仓库）
+- **改动背景与原理**：
+  - 响应用户跨设备拷贝部署需求，基于最新重命名、多语言国际化与门面优化后的最新工程；
+  - 零残留安全：macOS Keychain 隔离机制确保导出的产物中 100% 不含任何个人凭证或 Token；
+  - 交付三合一：整合开箱即用 App、干净轻量源码 Zip 与步骤详尽的离线 txt 指南。
+- **验证结果**：
+  - 交付文件夹 `DJIToGoogleDrive_Clean_Export` 生成完毕；
+  - 包含原生应用、2.7MB 源码包与配置指引；
+  - 验证 `.gitignore` 成功隔离，Git 仓库处于 100% 干净状态。
+---
+
 ### 📅 [2026-09-09 16:22] 开源门面优化：全面对接「我有神器 · I Have An App」极客门户与专属频道
 - **操作类型**：`[文档]` / `[优化]`
 - **涉及文件**：
