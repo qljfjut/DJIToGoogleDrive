@@ -50,7 +50,6 @@ private struct AuthConfig: Codable {
 public final class AuthManager: ObservableObject {
     public static let shared = AuthManager()
     
-    private static let keychainService = "com.qianliangjun.djitodrive.oauth"
     private static let redirectPort: UInt16 = 8085
     private static let redirectURI = "http://127.0.0.1:8085/oauth/callback"
     private static let scope = "https://www.googleapis.com/auth/drive.file"
@@ -358,39 +357,21 @@ public final class AuthManager: ObservableObject {
             .replacingOccurrences(of: "=", with: "")
     }
     
-    // MARK: - 双轨持久化引擎 (Dual-Layer Secure Storage: File 0600 + Keychain)
+    // MARK: - 本地独立安全持久化 (Secure File Storage: POSIX 0600)
     
     private func getSecureItem(key: String) -> String? {
-        // 1. 优先读取持久化配置（防重构/重签名丢失）
         switch key {
-        case "client_id": if let v = config.clientId, !v.isEmpty { return v }
-        case "client_secret": if let v = config.clientSecret, !v.isEmpty { return v }
-        case "access_token": if let v = config.accessToken, !v.isEmpty { return v }
-        case "refresh_token": if let v = config.refreshToken, !v.isEmpty { return v }
-        case "token_expiry": if let v = config.tokenExpiry, !v.isEmpty { return v }
-        case "user_email": if let v = config.userEmail, !v.isEmpty { return v }
-        default: break
+        case "client_id": return config.clientId
+        case "client_secret": return config.clientSecret
+        case "access_token": return config.accessToken
+        case "refresh_token": return config.refreshToken
+        case "token_expiry": return config.tokenExpiry
+        case "user_email": return config.userEmail
+        default: return nil
         }
-        
-        // 2. 备选读取系统 Keychain
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.keychainService,
-            kSecAttrAccount as String: key,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-        
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecSuccess, let data = result as? Data, let str = String(data: data, encoding: .utf8) {
-            return str
-        }
-        return nil
     }
     
     private func setSecureItem(key: String, value: String) {
-        // 1. 写入持久化配置并落盘
         switch key {
         case "client_id": config.clientId = value
         case "client_secret": config.clientSecret = value
@@ -401,19 +382,6 @@ public final class AuthManager: ObservableObject {
         default: break
         }
         saveConfig()
-        
-        // 2. 同步写入系统 Keychain
-        deleteKeychainItem(key: key)
-        guard let data = value.data(using: .utf8) else { return }
-        
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.keychainService,
-            kSecAttrAccount as String: key,
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
-        ]
-        SecItemAdd(query as CFDictionary, nil)
     }
     
     private func deleteSecureItem(key: String) {
@@ -427,16 +395,6 @@ public final class AuthManager: ObservableObject {
         default: break
         }
         saveConfig()
-        deleteKeychainItem(key: key)
-    }
-    
-    private func deleteKeychainItem(key: String) {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.keychainService,
-            kSecAttrAccount as String: key
-        ]
-        SecItemDelete(query as CFDictionary)
     }
     
     private func loadConfig() {

@@ -4,6 +4,21 @@
 
 ---
 
+### 📅 [2026-09-09 08:33] 彻底拔除 macOS Keychain 依赖：斩断系统锁头弹窗、纯净 0600 本地持久化
+- **操作类型**：`[修复]` / `[优化]`
+- **涉及文件**：
+  - `Sources/AuthManager/AuthManager.swift`（修改）
+- **改动背景与原理**：
+  - 用户反馈应用启动时立即弹出系统级锁头安全弹窗（"DJIToDrive wants to use your confidential information stored in 'com.qianliangjun.djitodrive.oauth' in your keychain. To allow this, enter the 'login' keychain password."）。
+  - 深度溯源：macOS 原生 Keychain 对无官方付费开发者证书（Ad-hoc 签名）的应用程序有严格的访问控制列表（ACL）限制，每次二进制构建 Hash 改变，macOS 都会强行弹窗要求用户输入 Mac 开机密码以防“提权盗密”。
+  - 彻底根治：彻底删除 `SecItemCopyMatching`、`SecItemAdd`、`SecItemDelete` 等全部钥匙串调用，凭证读写全面收敛至用户主目录下受操作系统保护的 `0600` 专用配置文件（`~/Library/Application Support/DJIToDrive/auth.json`）；同时通过终端命令将钥匙串中遗留的 5 项旧记录彻底清空。
+- **验证结果**：
+  - 代码中 `SecItem` 搜索结果降为 0；
+  - 成功清除历史残留的钥匙串条目（`access_token`, `refresh_token`, `token_expiry`, `client_id`, `client_secret`）；
+  - 重新打包发布 Release 版本（编译耗时 3.18s），并重新平滑拉起（PID 24706）；
+  - 启动过程 100% 纯净静默，无任何钥匙串密码弹窗打扰。
+---
+
 ### 📅 [2026-09-09 08:25] 彻底静默化改造：一次配置终生免调、双轨凭据永不掉登录与插卡全自动同步
 - **操作类型**：`[优化]` / `[重构]`
 - **涉及文件**：
