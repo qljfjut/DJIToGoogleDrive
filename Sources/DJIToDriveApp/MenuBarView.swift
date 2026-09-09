@@ -68,6 +68,12 @@ struct MenuBarView: View {
         .onChange(of: detector.connectedDevices) { _ in
             Task { await scanAllConnectedVolumes() }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .djiSingleFileCompleted)) { notification in
+            if let itemId = notification.userInfo?["itemId"] as? String {
+                self.uploadedItemIds.insert(itemId)
+                self.selectedItemIds.remove(itemId)
+            }
+        }
     }
 
     // MARK: - 1. 顶部状态栏
@@ -209,7 +215,13 @@ struct MenuBarView: View {
 
     private func mediaItemRow(_ item: ScannedMediaItem) -> some View {
         let isSelected = selectedItemIds.contains(item.id)
-        let isUploaded = uploadedItemIds.contains(item.id)
+        let isUploaded = uploadedItemIds.contains(item.id) || uploadEngine.completedItemIds.contains(item.id)
+        let isCurrentlyUploading = (item.id == uploadEngine.currentUploadingItemId)
+        let queueIndex = uploadEngine.queuedItemIds.firstIndex(of: item.id)
+        
+        let deviceName: String? = detector.connectedDevices.count > 1
+            ? detector.connectedDevices.first(where: { item.fileURL.path.hasPrefix($0.volumeURL.path) })?.displayName
+            : nil
         
         return HStack(spacing: 8) {
             Toggle("", isOn: Binding(
@@ -220,6 +232,7 @@ struct MenuBarView: View {
                 }
             ))
             .toggleStyle(.checkbox).labelsHidden()
+            .disabled(uploadEngine.isUploading && (isCurrentlyUploading || queueIndex != nil))
             
             Image(systemName: mediaIconName(for: item.kind))
                 .font(.caption)
@@ -229,24 +242,53 @@ struct MenuBarView: View {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
                     Text(item.filename).font(.system(size: 11, weight: .medium, design: .monospaced)).lineLimit(1)
-                    if item.isCorrupt {
+                    
+                    if isCurrentlyUploading {
+                        if uploadEngine.isPaused {
+                            badgeTag(text: "⏸️ 已暂停", color: .orange)
+                        } else {
+                            let prog = Int((uploadEngine.currentProgress?.currentFileProgress ?? 0) * 100)
+                            badgeTag(text: "🚀 传输中 \(prog)%", color: .accentColor)
+                        }
+                    } else if let qIdx = queueIndex {
+                        badgeTag(text: "⏳ 排队 #\(qIdx + 1)", color: .orange)
+                    } else if isUploaded {
+                        badgeTag(text: "✅ 已同步", color: .green)
+                    } else if item.isCorrupt {
                         badgeTag(text: "损坏 0B", color: .red)
                     } else if item.isJunk {
                         badgeTag(text: "疑似废片", color: .orange)
-                    } else if isUploaded {
-                        badgeTag(text: "已同步", color: .green)
                     } else {
                         badgeTag(text: "待同步", color: .blue)
                     }
                 }
-                Text(formattedDate(item.creationDate)).font(.system(size: 9)).foregroundColor(.secondary)
+                
+                HStack(spacing: 4) {
+                    if let dev = deviceName {
+                        Text("[\(dev)]").font(.system(size: 8, weight: .medium)).foregroundColor(.accentColor)
+                    }
+                    Text(formattedDate(item.creationDate)).font(.system(size: 9)).foregroundColor(.secondary)
+                }
             }
             Spacer()
+            
+            if queueIndex != nil && uploadEngine.isUploading {
+                Button(action: { uploadEngine.prioritize(itemId: item.id, immediate: true) }) {
+                    Text("⚡插队").font(.system(size: 9, weight: .bold))
+                        .padding(.horizontal, 4).padding(.vertical, 2)
+                        .background(Color.orange.opacity(0.15))
+                        .foregroundColor(.orange)
+                        .cornerRadius(3)
+                }
+                .buttonStyle(.plain)
+            }
+            
             Text(formattedBytes(item.sizeBytes))
                 .font(.system(size: 11, weight: .regular, design: .monospaced)).foregroundColor(.secondary)
         }
         .padding(.vertical, 2).padding(.horizontal, 6)
-        .background(isSelected ? Color.accentColor.opacity(0.08) : Color.clear).cornerRadius(4)
+        .background(isCurrentlyUploading ? Color.accentColor.opacity(0.12) : (isSelected ? Color.accentColor.opacity(0.06) : Color.clear))
+        .cornerRadius(4)
     }
 
     private func badgeTag(text: String, color: Color) -> some View {
@@ -265,14 +307,14 @@ struct MenuBarView: View {
                         Text("[\(progress.currentFileIndex)/\(progress.totalFiles)] \(progress.currentFilename)")
                             .font(.caption2).fontWeight(.semibold).lineLimit(1)
                         Spacer()
-                        Text("\(Int(progress.overallProgress * 100))%")
+                        Text("\(Int(progress.currentFileProgress * 100))%")
                             .font(.caption2).fontWeight(.bold).foregroundColor(.accentColor)
                     }
-                    ProgressView(value: progress.overallProgress, total: 1.0).progressViewStyle(.linear)
+                    ProgressView(value: progress.currentFileProgress, total: 1.0).progressViewStyle(.linear)
                     
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 4) {
                         metricBox(title: "📹 视频进度", value: "\(progress.currentFileIndex) / \(progress.totalFiles) 个")
-                        metricBox(title: "📊 上传流量", value: "\(formattedBytes(progress.totalUploadedBytes)) / \(formattedBytes(progress.totalBytesToUpload))")
+                        metricBox(title: "📊 总进度流量", value: "\(formattedBytes(progress.totalUploadedBytes)) / \(formattedBytes(progress.totalBytesToUpload)) (\(Int(progress.overallProgress * 100))%)")
                         metricBox(title: "⚡ 实时网速", value: formattedSpeed(progress.speedBytesPerSec))
                         metricBox(title: "⏱️ 预估剩余", value: formattedETA(progress.estimatedSecondsRemaining))
                     }
@@ -329,20 +371,32 @@ struct MenuBarView: View {
                     Button(role: .destructive, action: { uploadEngine.cancel() }) {
                         HStack {
                             Image(systemName: "xmark.circle.fill")
-                            Text("取消上传")
+                            Text("取消全部")
                         }
                         .frame(maxWidth: .infinity).padding(.vertical, 4)
                     }
                     .buttonStyle(.bordered)
                     
-                    Button(action: {}) {
-                        HStack {
-                            ProgressView().scaleEffect(0.6)
-                            Text("16MB Chunk 传输中...")
+                    if uploadEngine.isPaused {
+                        Button(action: { uploadEngine.resume() }) {
+                            HStack {
+                                Image(systemName: "play.fill")
+                                Text("继续上传")
+                            }
+                            .frame(maxWidth: .infinity).padding(.vertical, 4)
                         }
-                        .frame(maxWidth: .infinity).padding(.vertical, 4)
+                        .buttonStyle(.borderedProminent)
+                        .tint(.green)
+                    } else {
+                        Button(action: { uploadEngine.pause() }) {
+                            HStack {
+                                Image(systemName: "pause.fill")
+                                Text("暂停")
+                            }
+                            .frame(maxWidth: .infinity).padding(.vertical, 4)
+                        }
+                        .buttonStyle(.bordered)
                     }
-                    .buttonStyle(.borderedProminent).disabled(true)
                 }
             } else {
                 Button(action: { startSyncSelectedItems() }) {

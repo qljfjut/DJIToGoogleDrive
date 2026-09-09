@@ -81,10 +81,19 @@ public final class UploadEngine: ObservableObject {
     private static let retryBaseDelaySeconds: Double = 2.0
     
     @Published public private(set) var isUploading: Bool = false
+    @Published public private(set) var isPaused: Bool = false
+    @Published public private(set) var currentUploadingItemId: String? = nil
+    @Published public private(set) var queuedItemIds: [String] = []
+    @Published public private(set) var completedItemIds: Set<String> = []
     @Published public private(set) var currentProgress: UploadProgressState?
     
     private let ledger: Ledger
     private let authManager: AuthManager
+    
+    // 任务队列与抢占控制
+    private var activeQueue: [ScannedMediaItem] = []
+    private var shouldPreemptCurrentFile: Bool = false
+    private var pauseContinuation: CheckedContinuation<Void, Never>?
     
     // 缓存文件夹 ID：避免每个文件都向 Google 发起文件夹查询
     private var folderIdCache: [String: String] = [:]
@@ -100,9 +109,48 @@ public final class UploadEngine: ObservableObject {
         self.authManager = authManager ?? AuthManager.shared
     }
     
+    public func pause() {
+        guard isUploading, !isPaused else { return }
+        isPaused = true
+        NotificationCenter.default.post(name: .djiUploadLifecycleStateChanged, object: nil, userInfo: ["state": "paused"])
+    }
+    
+    public func resume() {
+        guard isUploading, isPaused else { return }
+        isPaused = false
+        NotificationCenter.default.post(name: .djiUploadLifecycleStateChanged, object: nil, userInfo: ["state": "uploading"])
+        pauseContinuation?.resume()
+        pauseContinuation = nil
+    }
+    
     public func cancel() {
         self.isCancelled = true
         self.isUploading = false
+        self.isPaused = false
+        self.pauseContinuation?.resume()
+        self.pauseContinuation = nil
+        self.currentUploadingItemId = nil
+        self.activeQueue.removeAll()
+        self.queuedItemIds.removeAll()
+        NotificationCenter.default.post(name: .djiUploadLifecycleStateChanged, object: nil, userInfo: ["state": "idle"])
+    }
+    
+    /// 调整排队项优先级；immediate 为 true 时触发安全让道抢占式插队
+    public func prioritize(itemId: String, immediate: Bool = true) {
+        guard let index = activeQueue.firstIndex(where: { $0.id == itemId }) else { return }
+        let targetItem = activeQueue.remove(at: index)
+        
+        if immediate && currentUploadingItemId != nil {
+            activeQueue.insert(targetItem, at: 0)
+            queuedItemIds = activeQueue.map(\.id)
+            shouldPreemptCurrentFile = true
+            if isPaused {
+                resume()
+            }
+        } else {
+            activeQueue.insert(targetItem, at: 0)
+            queuedItemIds = activeQueue.map(\.id)
+        }
     }
     
     // MARK: - 批量上传入口 (Batch Upload Entrypoint)
@@ -117,10 +165,20 @@ public final class UploadEngine: ObservableObject {
         }
         
         isCancelled = false
+        isPaused = false
         isUploading = true
+        activeQueue = items
+        queuedItemIds = items.map(\.id)
+        currentUploadingItemId = nil
+        completedItemIds.removeAll()
+        
         NotificationCenter.default.post(name: .djiUploadLifecycleStateChanged, object: nil, userInfo: ["state": "uploading"])
         defer {
             isUploading = false
+            isPaused = false
+            currentUploadingItemId = nil
+            activeQueue.removeAll()
+            queuedItemIds.removeAll()
             if isCancelled {
                 NotificationCenter.default.post(name: .djiUploadLifecycleStateChanged, object: nil, userInfo: ["state": "idle"])
             }
@@ -136,6 +194,8 @@ public final class UploadEngine: ObservableObject {
         var uploadedCount = 0
         var skippedCount = 0
         var actualUploadedBytes: Int64 = 0
+        var processedFileCount = 0
+        let totalItemsCount = items.count
         
         lastSampleTime = CFAbsoluteTimeGetCurrent()
         lastSampleBytes = 0
@@ -144,8 +204,13 @@ public final class UploadEngine: ObservableObject {
         // 云端对账文件清单缓存（FolderID -> [Filename: Size]）
         var cloudFilesCache: [String: [String: Int64]] = [:]
         
-        for (index, item) in items.enumerated() {
+        while !activeQueue.isEmpty {
             if isCancelled { throw UploadError.cancelled }
+            
+            let item = activeQueue.removeFirst()
+            queuedItemIds = activeQueue.map(\.id)
+            currentUploadingItemId = item.id
+            processedFileCount += 1
             
             // 确定当前文件的具体云端目标目录
             let destinationFolderId: String
@@ -168,7 +233,13 @@ public final class UploadEngine: ObservableObject {
             if let fp = fingerprint, await ledger.isUploaded(fingerprint: fp) {
                 skippedCount += 1
                 uploadedBytesSoFar += item.sizeBytes
-                reportProgress(item: item, fileIndex: index + 1, totalFiles: items.count, overallUploaded: uploadedBytesSoFar, grandTotalBytes: totalBytes, onProgress: onProgress)
+                completedItemIds.insert(item.id)
+                NotificationCenter.default.post(
+                    name: .djiSingleFileCompleted,
+                    object: nil,
+                    userInfo: ["itemId": item.id, "filename": item.filename, "fileSize": item.sizeBytes]
+                )
+                reportProgress(item: item, fileIndex: processedFileCount, totalFiles: totalItemsCount, overallUploaded: uploadedBytesSoFar, grandTotalBytes: totalBytes, onProgress: onProgress)
                 continue
             }
             
@@ -191,25 +262,41 @@ public final class UploadEngine: ObservableObject {
                 }
                 skippedCount += 1
                 uploadedBytesSoFar += item.sizeBytes
-                reportProgress(item: item, fileIndex: index + 1, totalFiles: items.count, overallUploaded: uploadedBytesSoFar, grandTotalBytes: totalBytes, onProgress: onProgress)
+                completedItemIds.insert(item.id)
+                NotificationCenter.default.post(
+                    name: .djiSingleFileCompleted,
+                    object: nil,
+                    userInfo: ["itemId": item.id, "filename": item.filename, "fileSize": item.sizeBytes]
+                )
+                reportProgress(item: item, fileIndex: processedFileCount, totalFiles: totalItemsCount, overallUploaded: uploadedBytesSoFar, grandTotalBytes: totalBytes, onProgress: onProgress)
                 continue
             }
             
             // 3. 执行单文件 16MB Chunk 断点续传
-            let cloudFileId = try await uploadSingleFile(
+            let outcome = try await uploadSingleFile(
                 item: item,
                 parentFolderId: destinationFolderId,
                 token: token,
-                fileIndex: index + 1,
-                totalFiles: items.count,
+                fileIndex: processedFileCount,
+                totalFiles: totalItemsCount,
                 baseUploadedBytes: uploadedBytesSoFar,
                 grandTotalBytes: totalBytes,
                 onProgress: onProgress
             )
             
+            if outcome.isPreempted {
+                // 当前文件被紧急任务插队让道：重新插回排队首位，等待插队任务完成后无缝断点续传
+                activeQueue.insert(item, at: 0)
+                queuedItemIds = activeQueue.map(\.id)
+                processedFileCount -= 1
+                continue
+            }
+            
+            let cloudFileId = outcome.cloudFileId
             uploadedBytesSoFar += item.sizeBytes
             actualUploadedBytes += item.sizeBytes
             uploadedCount += 1
+            completedItemIds.insert(item.id)
             
             // 4. 上传成功，固化至本地账本
             if let fp = fingerprint {
@@ -221,6 +308,13 @@ public final class UploadEngine: ObservableObject {
                     cloudPath: "\(cloudPathPrefix)/\(item.filename)"
                 )
             }
+            
+            // 实时广播单文件完成事件（触发 UI 行秒级变绿）
+            NotificationCenter.default.post(
+                name: .djiSingleFileCompleted,
+                object: nil,
+                userInfo: ["itemId": item.id, "filename": item.filename, "fileSize": item.sizeBytes]
+            )
         }
         
         NotificationCenter.default.post(name: .djiUploadLifecycleStateChanged, object: nil, userInfo: ["state": "completed"])
@@ -352,7 +446,7 @@ public final class UploadEngine: ObservableObject {
         baseUploadedBytes: Int64,
         grandTotalBytes: Int64,
         onProgress: (@Sendable (UploadProgressState) -> Void)?
-    ) async throws -> String {
+    ) async throws -> SingleFileUploadOutcome {
         let (sessionURI, initialOffset, completedId) = try await obtainSessionAndOffset(
             item: item,
             parentFolderId: parentFolderId,
@@ -360,7 +454,7 @@ public final class UploadEngine: ObservableObject {
         )
         
         if let fileId = completedId {
-            return fileId
+            return SingleFileUploadOutcome(cloudFileId: fileId, isPreempted: false)
         }
         
         guard let handle = try? FileHandle(forReadingFrom: item.fileURL) else {
@@ -373,6 +467,24 @@ public final class UploadEngine: ObservableObject {
         
         while uploadedForThisFile < totalFileSize {
             if isCancelled { throw UploadError.cancelled }
+            
+            // 抢占插队检测：保存当前已传切片进度，安全退出并让位给紧急插队文件
+            if shouldPreemptCurrentFile {
+                shouldPreemptCurrentFile = false
+                return SingleFileUploadOutcome(cloudFileId: "", isPreempted: true)
+            }
+            
+            // 暂停检测与无损异步挂起：保持断点，0 CPU 0 网络等待继续唤醒
+            if isPaused {
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    self.pauseContinuation = continuation
+                }
+                if isCancelled { throw UploadError.cancelled }
+                if shouldPreemptCurrentFile {
+                    shouldPreemptCurrentFile = false
+                    return SingleFileUploadOutcome(cloudFileId: "", isPreempted: true)
+                }
+            }
             
             let currentChunkSize = Int(min(Int64(Self.chunkSize), totalFileSize - uploadedForThisFile))
             try handle.seek(toOffset: UInt64(uploadedForThisFile))
@@ -431,12 +543,12 @@ public final class UploadEngine: ObservableObject {
             
             if let fileId = resultId {
                 removeResumableSession(for: item.fileURL.path)
-                return fileId
+                return SingleFileUploadOutcome(cloudFileId: fileId, isPreempted: false)
             }
         }
         
         removeResumableSession(for: item.fileURL.path)
-        return ""
+        return SingleFileUploadOutcome(cloudFileId: "", isPreempted: false)
     }
     
     private func uploadChunkWithRetry(
