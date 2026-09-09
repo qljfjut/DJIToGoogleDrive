@@ -115,18 +115,21 @@ public final class UploadEngine: ObservableObject {
     public func pause() {
         guard isUploading, !isPaused else { return }
         isPaused = true
+        SleepAssertionManager.shared.deactivate()
         NotificationCenter.default.post(name: .djiUploadLifecycleStateChanged, object: nil, userInfo: ["state": "paused"])
     }
     
     public func resume() {
         guard isUploading, isPaused else { return }
         isPaused = false
+        SleepAssertionManager.shared.activate()
         NotificationCenter.default.post(name: .djiUploadLifecycleStateChanged, object: nil, userInfo: ["state": "uploading"])
         pauseContinuation?.resume()
         pauseContinuation = nil
     }
     
     public func cancel() {
+        SleepAssertionManager.shared.deactivate()
         self.isCancelled = true
         self.isUploading = false
         self.isPaused = false
@@ -226,7 +229,9 @@ public final class UploadEngine: ObservableObject {
         allItemsMap = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
         
         NotificationCenter.default.post(name: .djiUploadLifecycleStateChanged, object: nil, userInfo: ["state": "uploading"])
+        SleepAssertionManager.shared.activate()
         defer {
+            SleepAssertionManager.shared.deactivate()
             isUploading = false
             isPaused = false
             currentUploadingItemId = nil

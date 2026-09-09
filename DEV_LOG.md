@@ -4,6 +4,33 @@
 
 ---
 
+### 📅 [2026-09-09 15:28] 系统级防休眠断言管理与屏幕熄灭节能保障 (Sleep Assertion & Display Sleep)
+- **操作类型**：`[新增]` / `[优化]`
+- **涉及文件**：
+  - `Sources/UploadEngine/SleepAssertionManager.swift`（新增，基于 ProcessInfo.ActivityOptions 的系统级防休眠断言管理）
+  - `Sources/UploadEngine/UploadEngine.swift`（修改，在上传开始/恢复时激活防休眠，在完成/暂停/取消时安全注销释放）
+  - `Sources/DJIToDriveApp/MenuBarView.swift`（修改，仪表盘实时呈现防休眠保护运行中状态）
+- **改动背景与原理**：
+  - 用户痛点与需求：
+    - 大文件（数十至上百 GB 4K/8K 视频）长时间或通宵上传时，macOS 闲置休眠会导致系统挂起、网卡断流、上传中断；
+    - 屏幕需要允许正常熄灭降温节能，但电脑主机不能休眠，必须持续执行网络上传。
+  - 核心解决机制：
+    1. **精准电源断言隔离（PreventUserIdleSystemSleep）**：
+       - 调用 macOS 原生 `ProcessInfo.processInfo.beginActivity(options: [.idleSystemSleepDisabled, .userInitiated], reason: ...)`；
+       - `idleSystemSleepDisabled` 严格仅拦截整机系统睡眠，允许显示屏正常按系统设定黑屏熄灭；`userInitiated` 声明高优先级调度，杜绝系统 App Nap 扼流；
+    2. **严密生命周期自动管理**：
+       - `uploadItems` 启动时自动激活；
+       - `defer` 块确保上传全部完成、抛出异常或中途退出时即刻 `deactivate()`；
+       - 用户手动点击暂停时释放休眠保护，点击继续时重新挂载保护；取消时彻底解除；
+    3. **状态可视化与代码规范**：
+       - 面板仪表盘直观显示 `☕ 防休眠保护运行中 (屏幕可熄灭)`，带给用户确定感；
+       - `MenuBarView.swift` (776行)、`UploadEngine.swift` (706行)、`SleepAssertionManager.swift` (51行)，全项目源码严守 ≤ 800 行红线。
+- **验证结果**：
+  - SPM 官方工具链增量构建完成（耗时 5.63s），0 错误，0 警告；
+  - 原生 Bundle 重新签名并平滑重载至菜单栏（PID 41468）；
+  - 验证电源断言生命周期正常挂载与释放。
+---
+
 ### 📅 [2026-09-09 15:20] 已同步与无效素材多阶梯沉底、卡内物理彻底删除与空间释放、级联清除缓存与全选/全不选增强
 - **操作类型**：`[新增]` / `[优化]` / `[重构]`
 - **涉及文件**：

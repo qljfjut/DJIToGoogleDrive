@@ -474,6 +474,13 @@ struct MenuBarView: View {
                         metricBox(title: "⚡ 实时网速", value: formattedSpeed(progress.speedBytesPerSec))
                         metricBox(title: "⏱️ 预估剩余", value: formattedETA(progress.estimatedSecondsRemaining))
                     }
+                    
+                    HStack(spacing: 4) {
+                        Image(systemName: "cup.and.saucer.fill").font(.system(size: 8)).foregroundColor(.orange)
+                        Text("防休眠保护运行中 (屏幕可熄灭)").font(.system(size: 9)).foregroundColor(.secondary)
+                        Spacer()
+                    }
+                    .padding(.top, 1)
                 }
                 .padding(8).background(Color.accentColor.opacity(0.06)).cornerRadius(6)
             } else {
