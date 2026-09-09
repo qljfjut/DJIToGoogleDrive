@@ -4,6 +4,26 @@
 
 ---
 
+### 📅 [2026-09-09 16:42] 建立 GitHub Releases 版本发布存档中心与自动化归档流水线
+- **操作类型**：`[新增]` / `[优化]` / `[文档]`
+- **涉及文件**：
+  - `Github发布存档/README.md`（新增，发布中心总览与3步发布SOP指引）
+  - `Github发布存档/v1.2.0/RELEASE_NOTES.md`（新增，v1.2.0 官方开箱即用发布文案）
+  - `Github发布存档/v1.2.0/SHA256SUMS.txt`（新增，v1.2.0 App与源码包双哈希校验清单）
+  - `Github发布存档/v1.2.0/DJIToGoogleDrive-v1.2.0-macOS.zip`（新增二进制包，Git 物理忽略）
+  - `Github发布存档/v1.2.0/DJIToGoogleDrive-v1.2.0-Source.zip`（新增纯净源码包，Git 物理忽略）
+  - `Github发布存档/v1.1.0/RELEASE_NOTES.md`（新增，v1.1.0 历史版本发布说明）
+  - `Github发布存档/v1.0.0/RELEASE_NOTES.md`（新增，v1.0.0 创世里程碑版本发布说明）
+  - `scripts/archive_release.sh`（新增，一键全自动打包、校验与归档流水线脚本）
+- **改动背景与原理**：
+  - 整理工作区结构，建立按语义化版本号（Semantic Versioning）严格分层的 `Github发布存档/` 中心；
+  - 完整追溯归档 v1.0.0、v1.1.0、v1.2.0 的发布文案与二进制包，提供可以直接复制粘贴至 GitHub Releases 的开箱文案；
+  - 编写自动化脚本 `scripts/archive_release.sh`（61 行，符合 ≤800 行铁律），实现一键执行 Release 编译、签名、打包、生成哈希并分类归档；
+  - `.gitignore` 规则有效拦截二进制 `.zip` 膨胀仓库，保留完整纯文本发布文档在 Git 版本库中持续迭代。
+- **验证结果**：
+  - `Github发布存档/` 各级版本目录与校验值完整就绪；
+  - `git status` 确认无大体积二进制污染，文档与脚本顺利纳入版本控制。
+
 ### 📅 [2026-09-09 16:31] 生成 GitHub Releases v1.2.0 官方二进制发布包
 - **操作类型**：`[发布]`
 - **涉及文件**：
