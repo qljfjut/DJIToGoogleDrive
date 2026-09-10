@@ -780,3 +780,22 @@
   - `/Applications/DJIToGoogleDrive.app` 已平滑重启生效（PID 4163）；
   - `Github发布存档/v1.2.2/` 4 大核心资产全部就绪，版本库干净轻量。
 ---
+
+### 📅 [2026-09-10 09:58] 自动化发布 GitHub Releases v1.2.2 并挂载全量二进制安装包
+- **操作类型**：`[发布]` / `[工具链]`
+- **涉及文件**：
+  - `GitHub 远程 Release`：`https://github.com/qljfjut/DJIToGoogleDrive/releases/tag/v1.2.2`
+  - `GitHub 远程 Asset 1`：`DJIToGoogleDrive-v1.2.2-macOS.zip` (2.18 MB)
+  - `GitHub 远程 Asset 2`：`DJIToGoogleDrive-v1.2.2-Source.zip` (2.74 MB)
+  - `DEV_LOG.md`（追加本次自动化发版审计记录）
+- **改动背景与原理**：
+  - 用户反馈在 GitHub 仓库主页右侧栏依然仅展示 `v1.2.0 Latest`，未自动呈现 `v1.2.2`；
+  - 根因：Git 提交代码与推标签（`git push --tags`）仅更新代码库与 Tag，GitHub 右侧看板需要通过 Release API 正式挂载发行版条目与安装包资产；
+  - 核心操作：
+    1. 调用系统钥匙串 GitHub 授权，通过 GitHub REST API v3 正式创建 `v1.2.2 官方优化版 (Official Release)`；
+    2. 注入完整的官方更新说明与 SHA-256 安全校验码；
+    3. 流式上传 `DJIToGoogleDrive-v1.2.2-macOS.zip` 与 `DJIToGoogleDrive-v1.2.2-Source.zip` 双资产。
+- **验证结果**：
+  - GitHub API 现场核验已确认发版条目升级为 2 条；
+  - `v1.2.2` 正式荣登仓库首选 **Latest** 标记，二进制资产下载链接全部通畅生效。
+---
