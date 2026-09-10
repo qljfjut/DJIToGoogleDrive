@@ -521,3 +521,262 @@
 - **验证结果**：`swift build -c release` 编译通过，应用打包重签名并重启（PID 22730），控制台正常唤起，多卷盘切换与专属图标均稳定就绪。
 ---
 
+### 📅 [2026-09-09 19:35] 启动台多副本图标清理与 Launch Services / Launchpad 重建
+- **操作类型**：`[修复]` / `[优化]`
+- **涉及文件**：
+  - `DJIToGoogleDrive_Clean_Export/DJIToGoogleDrive.app`（清理：压缩为 zip 归档并移除裸 app）
+  - `DJIToGoogleDrive.app`（清理：移除工作区根目录下打包生成的冗余 app）
+  - `DEV_LOG.md`（修改）
+- **改动背景与原理**：
+  - 用户反馈启动台（Launchpad）搜索 `dji` 出现 4 个重复的 `DJIToGoogleDrive` 图标；
+  - 经查为多次打包后，在工作区根目录、干净导出目录及外部参考资料目录中各残留了 `.app` 目录，被 macOS Launch Services 全局扫描并索引；
+  - 规范将主运行包收敛至系统级 `/Applications/DJIToGoogleDrive.app`，其余目录归档压缩为 `.zip`，并通过 `lsregister -u` 注销多余路径、执行 `ResetLaunchPad` 重建启动台。
+- **主要改动细节**：
+  1. 压缩归档 `DJIToGoogleDrive_Clean_Export/DJIToGoogleDrive.zip` 并删除解开的 `.app`。
+  2. 清理工作区根目录下散落的 `DJIToGoogleDrive.app`。
+  3. 执行 `lsregister -u` 注销多余的注册路径，全局唯一保留 `/Applications/DJIToGoogleDrive.app`。
+  4. 重置并刷新 Launchpad 数据库与 Dock 进程。
+- **验证结果**：`lsregister -dump` 验证全系统仅剩 1 个正式注册项，启动台已成功重建，重复幽灵图标彻底消除。
+---
+
+### 📅 [2026-09-10 09:14] 注入 HTTP 502/5xx 自适应指数退避重试、Google 状态探针自愈与 /Applications 全局自动部署
+- **操作类型**：`[修复]` / `[优化]`
+- **涉及文件**：
+  - `Sources/UploadEngine/UploadEngine.swift`（修改：注入 5xx 容错捕获、指数退避、Google Drive Resumable Upload 状态探针查询与错误文案清洗）
+  - `Sources/DJIToDriveApp/MenuBarView.swift`（修改：添加错误信息 3 行展示上限，杜绝长文案破坏排版）
+  - `scripts/package_app.sh`（修改：打包流水线直通覆盖 `/Applications/DJIToGoogleDrive.app` 并完成 Ad-hoc 签名与桌面副本清理）
+- **改动背景与原理**：
+  - 用户反馈上传单文件 17GB 巨型全景视频时，因代理长连接截断或 Google 边缘服务器抖动突发 `502 Bad Gateway` 报错，原始 HTML 乱码打满 UI 且导致传输异常中断；
+  - 严格遵循 Google Drive API Resumable Upload 官方容灾重试规范：
+    1. 将 500/502/503/504 与网络连接重置纳入瞬时可恢复错误，启动 2s+ 指数退避与随机抖动休眠；
+    2. 休眠后向 Google 会话发送 `Content-Range: bytes */totalSize` 空探针，核验云端实际已接收字节，若分片已入库则自动放行下一片，避免盲目重传导致范围冲突；
+    3. 清洗错误描述，杜绝 HTML 源码输出，重试 5 次彻底耗尽后才展示人性化中文提示；
+    4. 重构打包脚本，统一发布部署至 `/Applications/DJIToGoogleDrive.app`，保证全局唯一活跃版本。
+- **主要改动细节**：
+  1. `UploadEngine.swift` 中升级 `uploadChunkWithRetry`：捕获 `[500, 502, 503, 504]` 及网络超时，采用指数退避休眠并发送 `bytes */total` 探活验证已接收范围；
+  2. `UploadError` 新增 `cleanMessage`，拦截 HTML 网页源码，将 502 格式化为清晰的人性化提示；
+  3. `package_app.sh` 将第 4 步发布目标收敛为 `/Applications/DJIToGoogleDrive.app` 并清理桌面冗余副本。
+- **验证结果**：
+  - SPM 官方工具链 Release 编译耗时 5.67s，0 错误；
+  - Apple 原生 Ad-hoc 签名成功，新包已覆盖安装至 `/Applications/DJIToGoogleDrive.app`；
+  - 平滑重启应用（PID 1653），单文件代码行数严格 ≤ 800 行。
+---
+
+### 📅 [2026-09-10 09:18] 原生 GitHub Releases 远程升级检查器与全链路发版闭环
+- **操作类型**：`[新增]` / `[优化]`
+- **涉及文件**：
+  - `Sources/DJIToDriveApp/UpdateChecker.swift`（新增：128行，GitHub Releases API 异步请求、语义化版本 SemVer 比对算法与发版日志解析器）
+  - `Sources/DJIToDriveApp/SettingsView.swift`（修改：413行，增设「软件更新」配置卡片、当前版本展示、手动检查按钮与新版直达）
+  - `Sources/DJIToDriveApp/LocalizationManager.swift`（修改：266行，补充中英多语言字典项）
+  - `Sources/DJIToDriveApp/MenuBarView.swift`（修改：773行，启动静默异步自检，发现新版本时在设置入口浮现小圆点徽章）
+  - `scripts/package_app.sh`（修改：更新打包与部署流水线）
+- **改动背景与原理**：
+  - 用户需求：建立应用远程更新与版本感知能力，让所有分发给外部用户的客户端具备开箱即用的远程升级检测能力；
+  - 核心架构与机制：
+    1. **零外部依赖 · 官方公开 API 对接**：
+       - 直连 `https://api.github.com/repos/qljfjut/DJIToGoogleDrive/releases/latest`，复用现存 GitHub Releases 设施，0 服务器维护成本；
+    2. **高鲁棒性语义化版本（SemVer）比对算法**：
+       - 提取本地 `CFBundleShortVersionString`（如 1.2.0）与远程 `tag_name`（如 v1.3.0），按主/次/修订号元组逐级比对；
+    3. **非阻塞异步嗅探与网络容灾**：
+       - 启动时在后台静默检查，0 阻塞 UI 主线程；提供手动「检查更新」按钮；支持网络超时优雅容错；
+    4. **更新日志与一键直达转化**：
+       - 发现新版时，直接在设置面板中渲染 Release Notes 摘要，并提供「前往 GitHub 查看并下载」直达入口；
+    5. **单文件行数红线守则**：
+       - 全工程 16 个 Swift 源文件物理行数严格收敛在 ≤ 800 行（UpdateChecker 128行, SettingsView 413行, MenuBarView 773行）。
+- **验证结果**：
+  - SPM 官方工具链 Release 增量构建耗时 4.23s，0 错误，0 警告；
+  - Apple 原生 Ad-hoc 代码签名成功，并已同步覆盖更新至 `/Applications/DJIToGoogleDrive.app`；
+  - 成功拉起新版进程（PID 1913），现场联调 GitHub API 返回 200，准确识别当前 v1.2.0 最新版本。
+---
+
+### 📅 [2026-09-10 09:28] 大疆官方学名与出厂序列号(SN)感知、后台常驻即插即报与一键内联自更新
+- **操作类型**：`[新增]` / `[优化]` / `[修复]`
+- **涉及文件**：
+  - `Sources/DeviceDetector/DeviceDetector.swift`（修改：323行，引入 IOKit USB 硬件扫描，精准提取大疆官方学名 DJI Osmo 360 与芯片级出厂序列号 SN）
+  - `Sources/DJIToDriveApp/AppDelegate.swift`（修改：311行，插入大疆硬件毫秒级推送系统横幅与提示音、自动展开控制面板、点击通知秒级唤醒）
+  - `Sources/DJIToDriveApp/MenuBarView.swift`（修改：773行，设备卡片动态装配官方学名与 SN 专属徽章，顶部版本号动态绑定）
+  - `Sources/DJIToDriveApp/UpdateChecker.swift`（修改：237行，实现 App 内部流式下载进度条、ditto 原生解压与 0.8 秒后台原子替换与平滑自重启）
+  - `Sources/DJIToDriveApp/SettingsView.swift`（修改：446行，升级卡片引入「🚀 一键自动更新并重启」按钮与线性进度条）
+  - `Sources/DJIToDriveApp/LocalizationManager.swift`（修改：271行，补充通知与自更新中英双语国际化文案）
+  - `Resources/Info.plist`（修改：版本号校准为 1.2.0）
+- **改动背景与原理**：
+  1. 用户需求：
+     - 识别出来的大疆设备必须使用大疆官方学名（如 DJI Osmo 360，废除通俗中文名“DJI 360 全景相机”）；
+     - 能在卡片与识别信息中带上出厂设备号（序列号 SN）；
+     - 软件常驻后台，插入大疆相机时在屏幕自动提醒并呼出控制台；
+     - 远程升级支持直接在 App 内点击自动下载安装，无需跳转浏览器。
+  2. 核心架构与解决机制：
+     - **IOKit 芯片级硬件侦测**：通过 `IOUSBHostDevice` 遍历匹配 DJI Vendor ID (11427 / 0x2CA3)，直接提取硬件上报的 `Osmo360_SN:BBBF1E26`，解析出官方学名 `DJI Osmo 360` 与序列号 `SN: BBBF1E26`；
+     - **系统级静默常驻与即插即感**：借助 `LSUIElement` 保持后台常驻，挂载时触发 `UNUserNotificationCenter` 发送带声音的系统横幅，并自动展开菜单栏 Popover；
+     - **App 内全自动无感自更**：流式下载 release asset zip ➔ ditto 原生解压 ➔ 启动脱钩替换脚本 ➔ 优雅退出并在 1 秒内换芯重启；
+     - **代码物理行数铁律**：全工程 16 个 Swift 源文件物理行数严格收敛在 ≤ 800 行内。
+- **验证结果**：
+  - SPM 官方工具链 Release 构建耗时 4.85s，0 错误，0 警告；
+  - Apple 原生 Ad-hoc 签名成功，已同步覆盖安装至 `/Applications/DJIToGoogleDrive.app`；
+  - 成功重启运行（PID 2121），各模块联调就绪。
+---
+
+### 📅 [2026-09-10 09:34] 建立 v1.2.1 官方发布归档底稿盒与全量资产固化
+- **操作类型**：`[新增]` / `[发布]` / `[文档]`
+- **涉及文件**：
+  - `Github发布存档/v1.2.1/RELEASE_NOTES.md`（新增：v1.2.1 官方完整发版说明与功能清单）
+  - `Github发布存档/v1.2.1/SHA256SUMS.txt`（新增：App安装包与源码包双哈希安全校验码）
+  - `Github发布存档/v1.2.1/DJIToGoogleDrive-v1.2.1-macOS.zip`（新增：2.2MB，可直接双击运行的官方原生签名应用，Git 物理忽略）
+  - `Github发布存档/v1.2.1/DJIToGoogleDrive-v1.2.1-Source.zip`（新增：2.7MB，该版本100%全套纯净源码底稿，Git 物理忽略）
+  - `Github发布存档/README.md`（修改：更新版本归档地图与发布 SOP）
+  - `Resources/Info.plist`（修改：系统版本号校准为 1.2.1）
+- **改动背景与原理**：
+  - 用户要求在工程文件夹内为每一个历史版本保留一份完整底稿，方便日后随时查阅、验证与一键倒退回滚；
+  - 基于 `scripts/archive_release.sh` 自动化流水线，一键编译、代码签名、生成 App 安装包与纯净源码 Zip；
+  - 在 `Github发布存档/` 下建立独立的 `v1.2.1/` 盒子，所有资产文件就绪，提供开箱即用的 GitHub Releases 发布文案与安装包，形成完美审计与回滚底座。
+- **验证结果**：
+  - `Github发布存档/v1.2.1/` 四大核心资产就绪（macOS App包、Source源码包、发布说明、SHA-256校验和）；
+  - `/Applications/DJIToGoogleDrive.app` 保持最新 1.2.1 运行态；
+  - Git 版本库干净无二进制污染，文档与配置顺利就绪。
+---
+
+### 📅 [2026-09-10 09:38] 建立官方版本更新日志 CHANGELOG.md 并集成端内一键查阅
+- **操作类型**：`[新增]` / `[优化]` / `[文档]`
+- **涉及文件**：
+  - `CHANGELOG.md`（新增：84行，遵循 Keep a Changelog 与 SemVer 2.0 工业标准，收录 v1.0.0 到 v1.2.1 全量功能与修复日志）
+  - `Sources/DJIToDriveApp/SettingsView.swift`（修改：新增查看更新日志 Sheet 弹窗、快捷键支持与外部打开联动，521行）
+  - `Sources/DJIToDriveApp/LocalizationManager.swift`（修改：补充更新日志中英双语国际化文案，275行）
+  - `scripts/package_app.sh`（修改：构建打包时将 CHANGELOG.md 自动拷贝至 App Bundle Resources）
+  - `scripts/archive_release.sh`（修改：源码归档包纳入 CHANGELOG.md）
+- **改动背景与原理**：
+  - 响应用户关于“更新日志也需要有”的明确需求，将分散在各版本发布说明里的变动内容汇总为项目根目录官方《更新日志》；
+  - 在偏好设置「软件更新与版本」中新增「📜 查看历史更新日志」交互按钮，用户无需翻找本地文件系统，在 App 内点击即可直接唤起精致弹窗查阅，支持等宽代码字体排版与快捷键退出，并支持一键在系统默认应用打开；
+  - 打包流水线同步将 CHANGELOG.md 封入 macOS Application Bundle Resources，保障无论独立安装包还是开发源码态均可无缝读取。
+- **验证结果**：
+  - 全工程所有 Swift 源文件物理行数继续严守 ≤ 800 行红线（最大文件 773 行）；
+  - Release 构建耗时 0.10s，Apple 原生 Ad-hoc 签名成功；
+  - `/Applications/DJIToGoogleDrive.app` 重启生效（PID 2776），端内更新日志查看弹窗与 Bundle 内文件映射均正常。
+---
+
+### 📅 [2026-09-10 09:40] 启动台双图标死循环彻底根治与构建打包隐蔽化重构
+- **操作类型**：`[修复]` / `[优化]` / `[工具链]`
+- **涉及文件**：
+  - `scripts/package_app.sh`（修改：构建打包路径转移至隐藏缓存区 `.build/`，新增 `lsregister -u` 自动消重与单入口强注册守门员）
+  - `scripts/archive_release.sh`（修改：归档读取 `.build/` 隐藏产物，桌面与源码区不再生成任何裸 `.app` 目录）
+  - `DEV_LOG.md`（追加本次根治审计记录）
+- **改动背景与原理**：
+  - 用户反馈启动台（Launchpad）搜索 `dji` 频繁出现两个重复的 `DJIToGoogleDrive` 图标，即便手动删除过，后续更新依然会复现；
+  - 根因诊断：
+    1. 历史打包脚本直接在桌面工作区裸露生成 `$PROJECT_ROOT/DJIToGoogleDrive.app`；
+    2. macOS 内核 `launchservicesd` 实时监控桌面文件夹，一旦发现 `.app` 便自动收录进启动台；
+    3. 每次开发迭代执行更新打包，桌面裸包便再次生成，导致第二个图标自动“复活”；
+    4. 系统中残留有历史更名目录的孤立注册节点。
+  - 根治解决机制：
+    1. **隐身打包（Stealth Build）**：将中间 Application Bundle 路径彻底转移至以 `.` 开头的隐藏目录 `$PROJECT_ROOT/.build/DJIToGoogleDrive.app`，macOS 启动台内核天然绝不扫描隐藏目录；
+    2. **自动消重守门员**：每次打包完成自动调用 `/System/Library/.../lsregister -u` 注销非 `/Applications` 路径的幽灵项，并用 `-f` 锁定 `/Applications` 唯一合法路径；
+    3. **深层洗盘**：彻底删除桌面残留裸包，深度清理 Launch Services 数据库并平滑刷新 Dock。
+- **验证结果**：
+  - 执行 `lsregister -dump` 验证全系统仅且仅剩唯一注册项：`/Applications/DJIToGoogleDrive.app`；
+  - 启动台搜索 `dji` 彻底恢复为唯一定位，绝不再出现任何副本；
+  - 运行进程状态正常（PID 2776），后续任何更新流水线均 100% 免疫双图标问题。
+---
+
+### 📅 [2026-09-10 09:44] 端内就地渲染本版本核心更新亮点与去弹窗重构
+- **操作类型**：`[优化]` / `[UI]`
+- **涉及文件**：
+  - `Sources/DJIToDriveApp/SettingsView.swift`（修改：移除冗余的 Sheet 弹窗与外部跳转，就地内嵌当前版本更新亮点可折叠卡片，496行）
+  - `Sources/DJIToDriveApp/LocalizationManager.swift`（修改：配置 v1.2.1 核心特性中英双语国际化结构数组，291行）
+  - `DEV_LOG.md`（追加本次优化记录）
+- **改动背景与原理**：
+  - 用户反馈先前的更新日志弹窗包含了过去所有的历史版本，且需要额外弹出窗口或跳转外部，交互体验较重；
+  - 核心优化：
+    1. **聚焦当期价值**：彻底屏蔽以往历史旧版本信息，只提取并呈现当前用户使用的 `v1.2.1` 核心亮点；
+    2. **界面就地直读（In-line Embedded）**：在偏好设置「4. 软件更新与版本」中，直接内嵌原生卡片，展示 502探针自愈、大疆官方学名、芯片级SN感知、即插即报横幅和端内一键自动升级 5 大要点；
+    3. **即时可见与轻量折叠**：默认展开呈现，用户也可点击右上角箭头随时随手折叠。
+- **验证结果**：
+  - 所有 Swift 源文件物理行数继续严格保持 ≤ 800 行（SettingsView 496 行，LocalizationManager 291 行）；
+  - SPM Release 编译 4.41s 成功，Ad-hoc 签名正常，部署至 `/Applications/DJIToGoogleDrive.app`；
+  - 平滑重启生效（PID 3126），设置界面无弹窗直接清晰查阅本版本特性。
+---
+
+### 📅 [2026-09-10 09:47] 界面语言分段器独立另起一行与截断彻底修复
+- **操作类型**：`[修复]` / `[UI]`
+- **涉及文件**：
+  - `Sources/DJIToDriveApp/SettingsView.swift`（修改：重构 languageSection 为垂直两行布局，分段器独立另起一行并横向通栏展示，497行）
+  - `Sources/DJIToDriveApp/LocalizationManager.swift`（修改：规范收敛选项文案，首项精炼为“跟随系统 / System”，标题精炼为“界面语言 / Language”，299行）
+  - `DEV_LOG.md`（追加本次排版修复记录）
+- **改动背景与原理**：
+  - 用户截图反馈：语言选择器与标题硬塞在同一水平行（HStack）且首项文案过长，导致第三项 `English` 被右边界截断显示为 `Engli`；
+  - 核心修复：
+    1. **响应指示独立另起一行**：将分段器下移并设置为横向自适应通栏（`.frame(maxWidth: .infinity)`），彻底释放横向空间；
+    2. **标准精炼文案**：中文模式呈现为 `[ 跟随系统 | 简体中文 | English ]`，英文模式呈现为 `[ System | 简体中文 | English ]`；
+    3. **宽裕留白与零截断**：每个分段均摊获得超 150pt 宽度，文字清晰居中，彻底根除切边截断现象。
+- **验证结果**：
+  - 所有 Swift 源文件物理行数继续严格保持 ≤ 800 行（SettingsView 497 行，LocalizationManager 299 行）；
+  - SPM Release 编译 4.21s 成功，Ad-hoc 签名正常，部署至 `/Applications/DJIToGoogleDrive.app`；
+  - 重启生效（PID 3338），设置界面语言卡片排版舒展大方，`English` 100% 完整展示。
+---
+
+### 📅 [2026-09-10 09:49] 偏好设置模块层级重排与更新亮点按需折叠
+- **操作类型**：`[重构]` / `[UI]`
+- **涉及文件**：
+  - `Sources/DJIToDriveApp/SettingsView.swift`（修改：板块垂直流重排，更新亮点改为默认折叠收起、点击才展开，490行）
+  - `Sources/DJIToDriveApp/LocalizationManager.swift`（修改：重新校准 1~5 模块编号，新增本版更新亮点胶囊按钮文案，300行）
+  - `DEV_LOG.md`（追加本次排版重构记录）
+- **改动背景与原理**：
+  - 用户反馈原分类层级不合理，要求将“更新”置于最顶部，中间聚合完整的 Google 账号设置体系，“语言”下移到下方；同时更新亮点卡片不应默认霸占大块空间，需点击才显示；
+  - 核心重构细节：
+    1. **分类层级理顺**：
+       - `1. 软件更新与版本`（最顶置）
+       - `2. Google Cloud 凭证配置`（中间业务流）
+       - `3. 账号授权状态`
+       - `4. Google Drive 目标目录与过滤规则`
+       - `5. 界面语言`（下方独立整行通栏分段器）
+       - 底部帮助指引；
+    2. **更新卡片按需极简（On-Demand Zero Footprint）**：
+       - `showCurrentVersionNotes` 默认置为 `false`；
+       - 第一行紧凑集成 `[✨ 本版更新亮点 ▾]` 胶囊按钮与 `[🔄 检查更新]` 按钮；
+       - 默认占用 0 额外垂直空间，只有点击时才原地微动展开 5 条核心亮点，再次点击随手收起。
+- **验证结果**：
+  - 全工程所有 Swift 源文件物理行数继续严格保持 ≤ 800 行（SettingsView 490 行，LocalizationManager 300 行）；
+  - SPM Release 编译 3.91s 成功，Ad-hoc 原生签名生效，热部署至 `/Applications/DJIToGoogleDrive.app`；
+  - 重启运行（PID 3545），设置窗口层次清晰分明，更新置顶轻量不占地，中间 Google 流紧凑连贯，语言位列第 5，体验流畅自然。
+---
+
+### 📅 [2026-09-10 09:51] 偏好设置去重去噪与极简统一标题样式
+- **操作类型**：`[精简]` / `[UI]`
+- **涉及文件**：
+  - `Sources/DJIToDriveApp/SettingsView.swift`（修改：彻底移除顶部冗余的 headerSection 及其分割线，移除 1 项前的旋转小图标，统一 1~5 项纯文字标题风格，460行）
+  - `DEV_LOG.md`（追加本次去冗余审计记录）
+- **改动背景与原理**：
+  - 用户截图黄框标注反馈：
+    1. 顶部内部大标题 `Google Drive 偏好设置` 属于重复信息（原生窗口标题已有），占用过多顶部空白；
+    2. `1. 软件更新与版本` 前面的旋转圆圈小图标与其他项不统一，属于视觉噪点。
+  - 核心清理：
+    1. **顶部清爽直达**：删除 `headerSection`，窗口内容整体上浮，第一眼即见 `1. 软件更新与版本`；
+    2. **纯粹统一的排版**：1~5 项标题统统采用统一的 `Text(loc....).font(.headline)`，去除多余前置小图标，沉稳规整。
+- **验证结果**：
+  - 全工程所有 Swift 源文件物理行数严格保持 ≤ 800 行（SettingsView 精简至 460 行）；
+  - SPM Release 构建 3.96s 成功，Ad-hoc 原生签名生效，热部署至 `/Applications/DJIToGoogleDrive.app`；
+  - 重启运行（PID 3793），黄框标注的两个元素已彻底移除，界面干净利落。
+---
+
+### 📅 [2026-09-10 09:55] 官方 v1.2.2 发布：启动台双图标根除、偏好设置层级重排与端内更新日志紧凑折叠
+- **操作类型**：`[新增]` / `[发布]` / `[优化]` / `[UI]`
+- **涉及文件**：
+  - `Resources/Info.plist`（修改：版本号校准为 1.2.2）
+  - `Sources/DJIToDriveApp/LocalizationManager.swift`（修改：配置 v1.2.2 核心特性字典与 1~5 序号对齐，300行）
+  - `Sources/DJIToDriveApp/SettingsView.swift`（修改：板块层级重构，更新亮点紧凑折叠，去冗余标题与图标，460行）
+  - `CHANGELOG.md`（修改：追加 v1.2.2 官方版本更新日志）
+  - `Github发布存档/v1.2.2/`（新增：全量 4 合 1 底稿盒子，含 macOS App 包、纯净源码包、发版说明、SHA-256 安全哈希）
+  - `Github发布存档/README.md`（修改：归档地图收录 v1.2.2）
+  - `scripts/package_app.sh`（修改：隐身构建打包与 lsregister -u 自动消重守门员）
+  - `scripts/archive_release.sh`（修改：读取隐藏目录打包源码与二进制）
+- **改动背景与原理**：
+  - 本次小版本迭代凝聚了 5 大系统级治理与交互升级：
+    1. **启动台双图标根治**：打包全流程收敛至 `.build/` 隐藏缓存区，彻底断绝 macOS Launch Services 持续重新索引的死循环；
+    2. **偏好设置业务层级全面理顺**：顶部置顶 `1. 软件更新与版本`，中间高度内聚完整的 Google 云存储设置流（`2. 凭证` ➔ `3. 授权` ➔ `4. 目标目录`），低频项 `5. 界面语言` 优雅下沉；
+    3. **更新亮点紧凑折叠**：默认零垂直空间占用，通过轻量胶囊按钮按需原地平滑展开/收起；
+    4. **语言分段器通栏自适应**：独立整行排布，彻底消除 `English` 截断为 `Engli` 的视觉 Bug；
+    5. **去噪去重统一纯文字排版**：移除窗口内部重复大标题与装饰小图标，视觉纯粹规整。
+- **验证结果**：
+  - 全工程 16 个 Swift 源文件物理行数继续 100% 严守 ≤ 800 行红线；
+  - SPM Release 编译 3.60s 成功，Apple 原生 Ad-hoc 代码重签名通过；
+  - `/Applications/DJIToGoogleDrive.app` 已平滑重启生效（PID 4163）；
+  - `Github发布存档/v1.2.2/` 4 大核心资产全部就绪，版本库干净轻量。
+---

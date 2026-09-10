@@ -22,7 +22,10 @@ cd "$PROJECT_ROOT"
 echo "🔨 [2/5] 调用 package_app.sh 编译并封装最新应用..."
 ./scripts/package_app.sh
 
-APP_PATH="$PROJECT_ROOT/DJIToGoogleDrive.app"
+APP_PATH="$PROJECT_ROOT/.build/DJIToGoogleDrive.app"
+if [ ! -d "$APP_PATH" ]; then
+    APP_PATH="/Applications/DJIToGoogleDrive.app"
+fi
 if [ ! -d "$APP_PATH" ]; then
     echo "❌ 未找到 $APP_PATH，打包终止！"
     exit 1
@@ -44,7 +47,7 @@ SOURCE_ZIP="$ARCHIVE_DIR/DJIToGoogleDrive-$VERSION-Source.zip"
 echo "📦 [4.5/5] 正在生成纯净源码包: $(basename "$SOURCE_ZIP")..."
 rm -f "$SOURCE_ZIP"
 zip -r "$SOURCE_ZIP" \
-  Package.swift Sources Resources scripts ARCHITECTURE.md BUSINESS_RULES.md README.md README_zh.md LICENSE .gitignore \
+  Package.swift Sources Resources scripts ARCHITECTURE.md BUSINESS_RULES.md CHANGELOG.md README.md README_zh.md LICENSE .gitignore \
   -x "*.DS_Store" "*__MACOSX*" >/dev/null 2>&1
 
 # 5. 生成 SHA-256 安全哈希校验文件

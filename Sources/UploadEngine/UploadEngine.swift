@@ -21,12 +21,39 @@ public enum UploadError: LocalizedError, Sendable {
         case .fileNotFound:
             return "本地源文件不存在或无法读取。"
         case .failedToCreateSession(let msg):
-            return "初始化 Google Drive 上传会话失败: \(msg)"
+            let clean = Self.cleanMessage(msg)
+            return "初始化 Google Drive 上传会话失败: \(clean)"
         case .chunkUploadFailed(let status, let msg):
-            return "分片上传失败 (状态码 \(status)): \(msg)"
+            let clean = Self.cleanMessage(msg, statusCode: status)
+            return "分片上传失败 (\(clean))，建议检查网络代理后重新同步。"
         case .cancelled:
             return "上传已被用户主动取消。"
         }
+    }
+    
+    private static func cleanMessage(_ raw: String, statusCode: Int? = nil) -> String {
+        if let status = statusCode {
+            if status == 502 {
+                return "502 Bad Gateway 网关或网络代理超时 (已自动重试5次)"
+            } else if status == 503 {
+                return "503 Google 服务暂时过载不可用"
+            } else if status == 504 {
+                return "504 网关响应超时"
+            } else if status == 500 {
+                return "500 Google 服务器内部错误"
+            }
+        }
+        if raw.contains("<html") || raw.contains("<!DOCTYPE") || raw.contains("<body") {
+            if let status = statusCode {
+                return "服务器异常响应 (状态码 \(status))"
+            }
+            return "服务器异常网页响应"
+        }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.count > 100 {
+            return String(trimmed.prefix(100)) + "..."
+        }
+        return trimmed.isEmpty ? "网络连接异常中断" : trimmed
     }
 }
 
@@ -627,6 +654,8 @@ public final class UploadEngine: ObservableObject {
         totalSize: Int64
     ) async throws -> String? {
         var attempts = 0
+        var lastStatusCode = -1
+        var lastErrorStr = ""
         
         while attempts < Self.maxRetries {
             attempts += 1
@@ -634,12 +663,13 @@ public final class UploadEngine: ObservableObject {
             request.httpMethod = "PUT"
             request.setValue("bytes \(rangeStart)-\(rangeEnd)/\(totalSize)", forHTTPHeaderField: "Content-Range")
             request.setValue("\(chunkData.count)", forHTTPHeaderField: "Content-Length")
+            request.timeoutInterval = 60
             request.httpBody = chunkData
             
             do {
                 let (data, response) = try await URLSession.shared.data(for: request)
                 guard let http = response as? HTTPURLResponse else {
-                    throw UploadError.chunkUploadFailed(-1, "无效响应")
+                    throw UploadError.chunkUploadFailed(-1, "无效网络响应")
                 }
                 
                 if http.statusCode == 308 {
@@ -653,21 +683,49 @@ public final class UploadEngine: ObservableObject {
                     }
                     return ""
                 } else {
-                    let errStr = String(data: data, encoding: .utf8) ?? ""
-                    if attempts >= Self.maxRetries {
-                        throw UploadError.chunkUploadFailed(http.statusCode, errStr)
-                    }
+                    lastStatusCode = http.statusCode
+                    lastErrorStr = String(data: data, encoding: .utf8) ?? ""
                 }
             } catch {
-                if attempts >= Self.maxRetries { throw error }
+                lastStatusCode = (error as? URLError)?.errorCode ?? -1
+                lastErrorStr = error.localizedDescription
             }
             
-            // 指数退避休眠重试
-            let delay = Self.retryBaseDelaySeconds * pow(2.0, Double(attempts - 1))
-            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            // 收到 5xx 瞬时服务器错误 (如 502 Bad Gateway) 或网络抖动：执行指数退避 + Google 状态探针自愈
+            if attempts < Self.maxRetries {
+                let delay = Self.retryBaseDelaySeconds * pow(2.0, Double(attempts - 1)) + Double.random(in: 0.1...0.8)
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                
+                // 发送空探针探测 Google 当前真实接收进度（遵循 Google Drive Resumable Upload 官方规范）
+                var probeRequest = URLRequest(url: sessionURI)
+                probeRequest.httpMethod = "PUT"
+                probeRequest.setValue("bytes */\(totalSize)", forHTTPHeaderField: "Content-Range")
+                probeRequest.setValue("0", forHTTPHeaderField: "Content-Length")
+                probeRequest.timeoutInterval = 25
+                
+                if let (probeData, probeResponse) = try? await URLSession.shared.data(for: probeRequest),
+                   let probeHttp = probeResponse as? HTTPURLResponse {
+                    if probeHttp.statusCode == 308 {
+                        if let rangeHeader = probeHttp.value(forHTTPHeaderField: "Range"),
+                           let lastHyphen = rangeHeader.split(separator: "-").last,
+                           let lastByteReceived = Int64(lastHyphen) {
+                            if lastByteReceived >= rangeEnd {
+                                // Google 实际上已完整入库该分片，无需重发，直接进入下一片
+                                return nil
+                            }
+                        }
+                    } else if probeHttp.statusCode == 200 || probeHttp.statusCode == 201 {
+                        if let json = try? JSONSerialization.jsonObject(with: probeData) as? [String: Any],
+                           let id = json["id"] as? String {
+                            return id
+                        }
+                        return ""
+                    }
+                }
+            }
         }
         
-        return nil
+        throw UploadError.chunkUploadFailed(lastStatusCode, lastErrorStr)
     }
     
     // MARK: - 会话初始化 (Initialize Resumable Session)

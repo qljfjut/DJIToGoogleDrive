@@ -11,6 +11,7 @@ import AuthManager
 struct SettingsView: View {
     @ObservedObject var authManager: AuthManager = .shared
     @ObservedObject var loc: LocalizationManager = .shared
+    @ObservedObject var updateChecker: UpdateChecker = .shared
     
     @State private var clientIdInput: String = ""
     @State private var clientSecretInput: String = ""
@@ -25,19 +26,20 @@ struct SettingsView: View {
     @State private var createDateSubfolderInput: Bool = true
     @State private var minVideoSizeMBInput: Int = 10
     @State private var targetSavedMessage: String?
+    @State private var showCurrentVersionNotes: Bool = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                headerSection
-                Divider()
-                languageSection
+                softwareUpdateSection
                 Divider()
                 credentialsSection
                 Divider()
                 authStatusSection
                 Divider()
                 targetDirectorySection
+                Divider()
+                languageSection
                 Divider()
                 footerHelpSection
             }
@@ -50,42 +52,21 @@ struct SettingsView: View {
     }
 
     private var languageSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Image(systemName: "globe")
-                    .foregroundColor(.accentColor)
-                Text(loc.languageSetting)
-                    .font(.headline)
-                Spacer()
-                Picker("", selection: $loc.currentLanguage) {
-                    ForEach(AppLanguage.allCases) { lang in
-                        Text(lang.displayName).tag(lang)
-                    }
+        VStack(alignment: .leading, spacing: 10) {
+            Text(loc.languageSetting)
+                .font(.headline)
+            
+            Picker("", selection: $loc.currentLanguage) {
+                ForEach(AppLanguage.allCases) { lang in
+                    Text(lang.localizedName(isEnglish: loc.isEnglish)).tag(lang)
                 }
-                .pickerStyle(.segmented)
-                .frame(width: 250)
             }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: .infinity)
         }
-        .padding(10)
+        .padding(12)
         .background(Color(nsColor: .controlBackgroundColor))
         .cornerRadius(8)
-    }
-
-    private var headerSection: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "key.fill")
-                .font(.title)
-                .foregroundColor(.accentColor)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Google Drive \(loc.preferencesTitle)")
-                    .font(.title3)
-                    .fontWeight(.bold)
-                Text(loc.credentialsSubheader)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-            Spacer()
-        }
     }
 
     private var credentialsSection: some View {
@@ -261,6 +242,138 @@ struct SettingsView: View {
         }
     }
 
+    private var softwareUpdateSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(loc.softwareUpdateSection)
+                .font(.headline)
+            
+            HStack {
+                Text(loc.currentVersionLabel)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                Text("v\(updateChecker.currentVersion)")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                
+                Spacer()
+                
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showCurrentVersionNotes.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "sparkles")
+                        Text(loc.viewCurrentVersionNotesBtn)
+                        Image(systemName: showCurrentVersionNotes ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 9))
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button {
+                    Task {
+                        await updateChecker.checkForUpdates(manual: true)
+                    }
+                } label: {
+                    if updateChecker.isChecking {
+                        ProgressView().controlSize(.small).padding(.trailing, 4)
+                        Text(loc.checkingForUpdates)
+                    } else {
+                        Label(loc.checkForUpdatesBtn, systemImage: "arrow.clockwise")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(updateChecker.isChecking)
+            }
+            
+            if showCurrentVersionNotes {
+                currentVersionNotesCard
+            }
+            
+            if let msg = updateChecker.statusMessage, !msg.isEmpty {
+                Text(msg)
+                    .font(.caption)
+                    .foregroundColor(updateChecker.hasUpdate ? .orange : (msg.contains("✅") ? .green : .secondary))
+            }
+            
+            if updateChecker.hasUpdate, let release = updateChecker.latestRelease {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(release.name ?? release.tagName)
+                                .font(.caption)
+                                .fontWeight(.bold)
+                            Text(release.tagName)
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        
+                        if updateChecker.isDownloading {
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.small)
+                                Text("\(Int(updateChecker.downloadProgress * 100))%")
+                                    .font(.caption2).fontWeight(.bold).foregroundColor(.accentColor)
+                            }
+                        } else {
+                            Button {
+                                Task {
+                                    await updateChecker.downloadAndInstallUpdate()
+                                }
+                            } label: {
+                                Label(loc.oneClickUpdateBtn, systemImage: "sparkles")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                        }
+                    }
+                    
+                    if updateChecker.isDownloading {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ProgressView(value: updateChecker.downloadProgress, total: 1.0)
+                                .progressViewStyle(.linear)
+                            Text(updateChecker.downloadStatus ?? loc.downloadingUpdate)
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.vertical, 2)
+                    }
+                    
+                    if let notes = release.body, !notes.isEmpty {
+                        Text(notes)
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                            .lineLimit(4)
+                            .padding(8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color(nsColor: .controlBackgroundColor).opacity(0.6))
+                            .cornerRadius(6)
+                    }
+                    
+                    if !updateChecker.isDownloading {
+                        HStack {
+                            Spacer()
+                            Button(loc.manualDownloadLink) {
+                                updateChecker.openReleasePage()
+                            }
+                            .buttonStyle(.link)
+                            .font(.system(size: 10))
+                        }
+                    }
+                }
+                .padding(10)
+                .background(Color.accentColor.opacity(0.08))
+                .cornerRadius(8)
+            }
+        }
+        .padding(14)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .cornerRadius(10)
+    }
+
     private var footerHelpSection: some View {
         HStack {
             Image(systemName: "questionmark.circle")
@@ -321,5 +434,27 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    private var currentVersionNotesCard: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(loc.currentVersionHighlights, id: \.self) { highlight in
+                HStack(alignment: .top, spacing: 6) {
+                    Text("•")
+                        .foregroundColor(.accentColor)
+                        .fontWeight(.bold)
+                        .font(.caption)
+                    Text(highlight)
+                        .font(.system(size: 11))
+                        .foregroundColor(.primary.opacity(0.85))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.6))
+        .cornerRadius(8)
+        .padding(.top, 2)
     }
 }

@@ -1,0 +1,2 @@
+29808b41ddbb9c17af184170b2c26c323e77b0195f6ad63a1356a3c68a7932f5  DJIToGoogleDrive-v1.2.1-Source.zip
+6915fa4eeeaea374cf657db49f3c494924c10bf5a236d9a5bd03912d185198cd  DJIToGoogleDrive-v1.2.1-macOS.zip

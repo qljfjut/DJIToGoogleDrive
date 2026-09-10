@@ -10,7 +10,7 @@ set -e
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ICON_SRC="$PROJECT_ROOT/Resources/AppIcon.png"
 APP_NAME="DJIToGoogleDrive"
-BUNDLE_DIR="$PROJECT_ROOT/$APP_NAME.app"
+BUNDLE_DIR="$PROJECT_ROOT/.build/$APP_NAME.app"
 DESKTOP_DIR="/Users/qianliangjun/Desktop"
 
 echo "🔨 步骤 1/4: 使用 SPM 官方工具链编译 Release 版本..."
@@ -67,17 +67,33 @@ chmod +x "$BUNDLE_DIR/Contents/MacOS/DJIToDriveApp"
 
 cp "$PROJECT_ROOT/Resources/Info.plist" "$BUNDLE_DIR/Contents/Info.plist"
 cp "$PROJECT_ROOT/Resources/AppIcon.icns" "$BUNDLE_DIR/Contents/Resources/AppIcon.icns"
+if [ -f "$PROJECT_ROOT/CHANGELOG.md" ]; then
+    cp "$PROJECT_ROOT/CHANGELOG.md" "$BUNDLE_DIR/Contents/Resources/CHANGELOG.md"
+fi
 echo "APPL????" > "$BUNDLE_DIR/Contents/PkgInfo"
 
 echo "🛡️ 步骤 3.5: 清除隔离属性并执行 macOS 原生 Ad-hoc 代码重签名..."
 xattr -cr "$BUNDLE_DIR"
 codesign --force --deep --sign - "$BUNDLE_DIR"
 
-echo "🚀 步骤 4/4: 发布至桌面并同步签名与刷新缓存..."
-rm -rf "$DESKTOP_DIR/$APP_NAME.app"
-cp -R "$BUNDLE_DIR" "$DESKTOP_DIR/$APP_NAME.app"
-xattr -cr "$DESKTOP_DIR/$APP_NAME.app"
-codesign --force --deep --sign - "$DESKTOP_DIR/$APP_NAME.app"
-touch "$DESKTOP_DIR/$APP_NAME.app"
+echo "🚀 步骤 4/4: 发布至 /Applications 并同步签名与刷新缓存..."
+rm -rf "/Applications/$APP_NAME.app"
+cp -R "$BUNDLE_DIR" "/Applications/$APP_NAME.app"
+xattr -cr "/Applications/$APP_NAME.app"
+codesign --force --deep --sign - "/Applications/$APP_NAME.app"
+touch "/Applications/$APP_NAME.app"
 
-echo "🎉 打包完成！【$APP_NAME.app】已静默部署至桌面，静默常驻右上角菜单栏！"
+# 彻底清理桌面与工作区裸包，杜绝 macOS Launch Services 抓取双图标
+rm -rf "$DESKTOP_DIR/$APP_NAME.app"
+rm -rf "$PROJECT_ROOT/$APP_NAME.app"
+
+# 从 macOS Launch Services 注销非 /Applications 的一切历史与幽灵注册项
+LS_REGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [ -f "$LS_REGISTER" ]; then
+    "$LS_REGISTER" -u "$PROJECT_ROOT/$APP_NAME.app" 2>/dev/null || true
+    "$LS_REGISTER" -u "$DESKTOP_DIR/$APP_NAME.app" 2>/dev/null || true
+    "$LS_REGISTER" -u "$BUNDLE_DIR" 2>/dev/null || true
+    "$LS_REGISTER" -f "/Applications/$APP_NAME.app" 2>/dev/null || true
+fi
+
+echo "🎉 打包完成！【$APP_NAME.app】已独家更新部署至 /Applications，并完成 Apple 原生签名与启动台单一化注册！"

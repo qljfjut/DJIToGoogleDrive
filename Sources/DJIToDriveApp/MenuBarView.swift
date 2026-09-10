@@ -32,6 +32,7 @@ struct MenuBarView: View {
     @State private var uploadSuccessMessage: String?
     @State private var settingsWindow: NSWindow?
     @StateObject private var deletionHelper = MediaDeletionHelper()
+    @ObservedObject private var updateChecker = UpdateChecker.shared
 
     // MARK: - 聚合计算属性
 
@@ -112,7 +113,10 @@ struct MenuBarView: View {
         .padding(.horizontal, 14)
         .padding(.bottom, 12)
         .frame(width: 440, height: 645)
-        .task { await scanAllConnectedVolumes() }
+        .task {
+            await scanAllConnectedVolumes()
+            await updateChecker.checkForUpdates(manual: false)
+        }
         .onChange(of: detector.connectedDevices) { _ in
             Task { await scanAllConnectedVolumes() }
         }
@@ -162,7 +166,7 @@ struct MenuBarView: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(loc.appName).font(.headline).fontWeight(.bold)
-                    Text("v1.2").font(.system(size: 9, weight: .bold))
+                    Text("v\(UpdateChecker.shared.currentVersion)").font(.system(size: 9, weight: .bold))
                         .padding(.horizontal, 4).padding(.vertical, 1)
                         .background(Color.secondary.opacity(0.15)).cornerRadius(3)
                 }
@@ -484,7 +488,7 @@ struct MenuBarView: View {
                     } else if let err = uploadErrorMessage {
                         HStack(alignment: .top, spacing: 6) {
                             Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.red)
-                            Text(err).font(.caption2).foregroundColor(.red)
+                            Text(err).font(.caption2).foregroundColor(.red).lineLimit(3)
                         }
                     } else {
                         HStack {
@@ -576,8 +580,15 @@ struct MenuBarView: View {
 
     private var footerSection: some View {
         HStack {
-            Button(loc.preferencesAndAccount) { openPreferences() }
-                .buttonStyle(.plain).font(.caption).foregroundColor(.secondary)
+            Button(action: { openPreferences() }) {
+                HStack(spacing: 4) {
+                    Text(loc.preferencesAndAccount)
+                    if updateChecker.hasUpdate {
+                        Circle().fill(Color.orange).frame(width: 6, height: 6)
+                    }
+                }
+            }
+            .buttonStyle(.plain).font(.caption).foregroundColor(.secondary)
             Spacer()
             Button(action: scanDeviceManually) {
                 Image(systemName: "arrow.clockwise").font(.caption)

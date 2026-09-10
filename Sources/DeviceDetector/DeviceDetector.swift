@@ -7,13 +7,22 @@
 
 import Foundation
 import AppKit
+import IOKit
 
 /// 支持的 DJI 硬件设备类型枚举
 public enum DJIDeviceType: String, Sendable, CaseIterable {
     case pocket3 = "DJI Osmo Pocket 3"
     case pocket4 = "DJI Osmo Pocket 4"
-    case dji360 = "DJI 360 全景相机"
-    case genericDJI = "DJI 媒体设备 (读卡器/直连)"
+    case dji360 = "DJI Osmo 360"
+    case action4 = "DJI Osmo Action 4"
+    case action5 = "DJI Osmo Action 5 Pro"
+    case action2 = "DJI Action 2"
+    case genericDJI = "DJI 存储设备 (读卡器/直连)"
+}
+
+public struct DJIHwInfo: Sendable {
+    public let deviceType: DJIDeviceType
+    public let serialNumber: String?
 }
 
 /// 已识别并连接的硬件设备实体
@@ -23,22 +32,25 @@ public struct ConnectedDevice: Identifiable, Sendable, Equatable {
     public let deviceType: DJIDeviceType
     public let volumeURL: URL
     public let dcimURL: URL
+    public let serialNumber: String?
     
     public var displayName: String {
         let upper = volumeName.uppercased()
+        let snBadge = serialNumber != nil ? " [SN: \(serialNumber!)]" : ""
         if upper.contains("SD") || upper.contains("CARD") {
-            return "\(deviceType.rawValue) (存储卡)"
+            return "\(deviceType.rawValue)\(snBadge) (存储卡)"
         } else if upper.contains("OSMO") || upper.contains("360") {
-            return "\(deviceType.rawValue) (机身存储)"
+            return "\(deviceType.rawValue)\(snBadge) (机身存储)"
         }
-        return "\(deviceType.rawValue) (\(volumeName))"
+        return "\(deviceType.rawValue)\(snBadge) (\(volumeName))"
     }
     
-    public init(volumeName: String, deviceType: DJIDeviceType, volumeURL: URL, dcimURL: URL) {
+    public init(volumeName: String, deviceType: DJIDeviceType, volumeURL: URL, dcimURL: URL, serialNumber: String? = nil) {
         self.volumeName = volumeName
         self.deviceType = deviceType
         self.volumeURL = volumeURL
         self.dcimURL = dcimURL
+        self.serialNumber = serialNumber
     }
 }
 
@@ -183,54 +195,115 @@ public final class DeviceDetector: ObservableObject {
             return nil
         }
         
-        // 深入分析 DCIM 内部特征以判定设备型号
-        let type = classifyDeviceType(volumeName: volumeName, dcimURL: dcimURL)
+        // 深入结合 IOKit USB 硬件信息与 DCIM 内部特征以判定设备型号与设备号
+        let hwInfo = Self.queryDJIHardware()
+        let (type, sn) = classifyDeviceType(volumeName: volumeName, dcimURL: dcimURL, hwInfo: hwInfo)
         return ConnectedDevice(
             volumeName: volumeName,
             deviceType: type,
             volumeURL: volumeURL,
-            dcimURL: dcimURL
+            dcimURL: dcimURL,
+            serialNumber: sn
         )
     }
     
-    /// 依据卷标名与 DCIM 子目录特征分类设备
-    private func classifyDeviceType(volumeName: String, dcimURL: URL) -> DJIDeviceType {
+    /// 依据 IOKit 硬件描述符、卷标名与 DCIM 子目录特征精准分类设备并提取设备号
+    private func classifyDeviceType(volumeName: String, dcimURL: URL, hwInfo: DJIHwInfo?) -> (DJIDeviceType, String?) {
         let upperName = volumeName.uppercased()
         
-        // 1. 卷标显式命中
-        if upperName.contains("POCKET4") {
-            return .pocket4
-        }
-        if upperName.contains("POCKET3") || upperName.contains("OSMO_POCKET") {
-            return .pocket3
-        }
-        if upperName.contains("360") || upperName.contains("PANORAMA") || upperName.contains("OSMO360") {
-            return .dji360
-        }
-        
-        // 2. 检查 DCIM 子目录与签名
-        let fileManager = FileManager.default
-        guard let subdirs = try? fileManager.contentsOfDirectory(atPath: dcimURL.path) else {
-            return .genericDJI
-        }
-        
-        for dir in subdirs {
-            let upperDir = dir.uppercased()
-            // 360 相机常见目录签名：CAM_001、PANORAMA、360 等
-            if upperDir.contains("PANORAMA") || upperDir.contains("360") || upperDir.hasPrefix("CAM_") {
-                return .dji360
+        if let hw = hwInfo {
+            if upperName.contains("360") || upperName.contains("OSMO360") || hw.deviceType == .dji360 {
+                return (.dji360, hw.serialNumber)
             }
-            if upperDir.contains("100MEDIA") {
-                let mediaPath = dcimURL.appendingPathComponent(dir)
-                if let files = try? fileManager.contentsOfDirectory(atPath: mediaPath.path) {
-                    if files.contains(where: { $0.hasPrefix("DJI_") }) {
-                        return .pocket3
+            if upperName.contains("POCKET3") || upperName.contains("OSMO_POCKET") || hw.deviceType == .pocket3 {
+                return (.pocket3, hw.serialNumber)
+            }
+            if upperName.contains("POCKET4") || hw.deviceType == .pocket4 {
+                return (.pocket4, hw.serialNumber)
+            }
+            if upperName.contains("ACTION") || hw.deviceType == .action4 || hw.deviceType == .action5 {
+                return (hw.deviceType, hw.serialNumber)
+            }
+            return (hw.deviceType, hw.serialNumber)
+        }
+        
+        // 无 USB 硬件直连（如普通第三方 TF 读卡器插卡），依据卷标与 DCIM 特征精准识别官方学名
+        if upperName.contains("POCKET4") { return (.pocket4, nil) }
+        if upperName.contains("POCKET3") || upperName.contains("OSMO_POCKET") { return (.pocket3, nil) }
+        if upperName.contains("360") || upperName.contains("PANORAMA") || upperName.contains("OSMO360") { return (.dji360, nil) }
+        
+        let fileManager = FileManager.default
+        if let subdirs = try? fileManager.contentsOfDirectory(atPath: dcimURL.path) {
+            for dir in subdirs {
+                let upperDir = dir.uppercased()
+                if upperDir.contains("PANORAMA") || upperDir.contains("360") || upperDir.hasPrefix("CAM_") {
+                    return (.dji360, nil)
+                }
+                if upperDir.contains("100MEDIA") {
+                    let mediaPath = dcimURL.appendingPathComponent(dir)
+                    if let files = try? fileManager.contentsOfDirectory(atPath: mediaPath.path) {
+                        if files.contains(where: { $0.hasPrefix("DJI_") }) {
+                            return (.pocket3, nil)
+                        }
                     }
                 }
             }
         }
         
-        return .genericDJI
+        return (.genericDJI, nil)
+    }
+
+    /// 通过 macOS 原生 IOKit 遍历 USB 总线，捕获大疆硬件出厂型号与序列号 (SN)
+    public static func queryDJIHardware() -> DJIHwInfo? {
+        let matchingDict = IOServiceMatching("IOUSBHostDevice")
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault, matchingDict, &iterator) == KERN_SUCCESS else {
+            return nil
+        }
+        defer { IOObjectRelease(iterator) }
+        
+        var service = IOIteratorNext(iterator)
+        while service != 0 {
+            defer {
+                IOObjectRelease(service)
+                service = IOIteratorNext(iterator)
+            }
+            
+            let vendor = IORegistryEntryCreateCFProperty(service, "idVendor" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int
+            let vendorName = IORegistryEntryCreateCFProperty(service, "USB Vendor Name" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? String
+            
+            if vendor == 11427 || vendorName == "DJI" {
+                let prod = (IORegistryEntryCreateCFProperty(service, "USB Product Name" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? String)
+                    ?? (IORegistryEntryCreateCFProperty(service, "kUSBProductString" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? String)
+                    ?? ""
+                
+                var sn: String? = nil
+                if let snRange = prod.range(of: "SN:") {
+                    let rawSn = String(prod[snRange.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !rawSn.isEmpty { sn = rawSn }
+                }
+                
+                let upper = prod.uppercased()
+                let type: DJIDeviceType
+                if upper.contains("360") {
+                    type = .dji360
+                } else if upper.contains("POCKET4") {
+                    type = .pocket4
+                } else if upper.contains("POCKET3") {
+                    type = .pocket3
+                } else if upper.contains("ACTION5") {
+                    type = .action5
+                } else if upper.contains("ACTION4") {
+                    type = .action4
+                } else if upper.contains("ACTION2") {
+                    type = .action2
+                } else {
+                    type = .genericDJI
+                }
+                return DJIHwInfo(deviceType: type, serialNumber: sn)
+            }
+        }
+        return nil
     }
     
     /// 检查 DCIM 目录下是否存在子文件

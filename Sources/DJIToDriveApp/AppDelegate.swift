@@ -111,6 +111,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let connected = !self.detector.connectedDevices.isEmpty
                 if connected && self.currentIconState != .uploading {
                     self.updateIconState(to: .connectedIdle)
+                    
+                    // 硬件插入触发系统横幅通知并自动展开控制面板
+                    if let dev = self.detector.activeDevice ?? self.detector.connectedDevices.first {
+                        let snText = dev.serialNumber.map { " [SN: \($0)]" } ?? ""
+                        let title = "🔌 已识别 \(dev.deviceType.rawValue)\(snText)"
+                        let body = "已就绪 (\(dev.volumeName))，点击展开控制中心开始同步至 Google Drive。"
+                        AppDelegate.sendNotification(title: title, body: body)
+                        self.showPopover()
+                    }
                 }
             }
         }
@@ -286,5 +295,17 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
         completionHandler([.banner, .sound])
+    }
+    
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        Task { @MainActor in
+            self.showPopover()
+            self.showMainWindow()
+        }
+        completionHandler()
     }
 }

@@ -17,7 +17,15 @@ public enum AppLanguage: String, CaseIterable, Identifiable {
     
     public var displayName: String {
         switch self {
-        case .system: return "跟随系统 (System Default)"
+        case .system: return "跟随系统"
+        case .zhHans: return "简体中文"
+        case .en: return "English"
+        }
+    }
+    
+    public func localizedName(isEnglish: Bool) -> String {
+        switch self {
+        case .system: return isEnglish ? "System" : "跟随系统"
         case .zhHans: return "简体中文"
         case .en: return "English"
         }
@@ -228,19 +236,19 @@ public final class LocalizationManager: ObservableObject {
     // MARK: - 偏好设置与通用窗口文案
     public var preferencesTitle: String { isEnglish ? "Preferences" : "偏好设置" }
     public var controlCenterTitle: String { "DJIToGoogleDrive " + (isEnglish ? "Control Center" : "控制中心") }
-    public var languageSetting: String { isEnglish ? "Display Language / 界面语言" : "界面语言 / Language" }
-    public var credentialsSection: String { isEnglish ? "1. Google Cloud Credentials" : "1. Google Cloud 凭证配置" }
+    public var languageSetting: String { isEnglish ? "5. Display Language" : "5. 界面语言" }
+    public var credentialsSection: String { isEnglish ? "2. Google Cloud Credentials" : "2. Google Cloud 凭证配置" }
     public var credentialsSubheader: String { isEnglish ? "All credentials are encrypted and stored via macOS Keychain" : "所有凭证均通过 macOS Keychain 硬件加密安全托管" }
     public var paste: String { isEnglish ? "Paste" : "粘贴" }
     public var saveToKeychain: String { isEnglish ? "Save Credentials to Keychain" : "保存凭证至 Keychain" }
-    public var authStatusSection: String { isEnglish ? "2. Authorization Status" : "2. 账号授权状态" }
+    public var authStatusSection: String { isEnglish ? "3. Authorization Status" : "3. 账号授权状态" }
     public var connectedGoogleDrive: String { isEnglish ? "Connected to Google Drive" : "已成功连接 Google Drive" }
     public var notAuthorizedGoogleDrive: String { isEnglish ? "Google Account Not Authorized" : "尚未授权 Google 账号" }
     public func currentAccountLabel(_ email: String) -> String { isEnglish ? "Account: \(email)" : "当前账号: \(email)" }
     public var signOut: String { isEnglish ? "Sign Out" : "退出登录" }
     public var signInGoogle: String { isEnglish ? "Sign in with Google" : "立即登录 Google 账号" }
     public var openingBrowser: String { isEnglish ? "Opening browser..." : "正在打开浏览器..." }
-    public var targetFolderSection: String { isEnglish ? "3. Google Drive Target Folder & Rules" : "3. Google Drive 目标目录与过滤规则" }
+    public var targetFolderSection: String { isEnglish ? "4. Google Drive Target Folder & Rules" : "4. Google Drive 目标目录与过滤规则" }
     public var targetFolderLabel: String { isEnglish ? "Target Directory (Folder name or Google Drive link/ID):" : "目标目录 (支持文件夹名称或直接粘贴 Google Drive 网址/ID):" }
     public var targetFolderPlaceholder: String { isEnglish ? "e.g.: DJI_Media or paste drive.google.com/drive/folders/..." : "例如: DJI_Media 或粘贴 drive.google.com/drive/folders/..." }
     public var createDateSubfolder: String { isEnglish ? "Create date subfolders (e.g.: Target/2026-09-09/)" : "按拍摄日期创建归档子目录 (例如: 目标目录/2026-09-09/)" }
@@ -251,4 +259,42 @@ public final class LocalizationManager: ObservableObject {
     public var targetSettingsSavedSuccess: String { isEnglish ? "✅ Target folder and filter rules saved successfully!" : "✅ 目标目录与过滤规则已成功保存！" }
     public var helpGuide: String { isEnglish ? "Need credentials? Create free desktop OAuth credentials on Google Cloud Console." : "未创建凭证？可前往 Google Cloud Console 免费创建桌面 OAuth 凭据。" }
     public var viewGuide: String { isEnglish ? "View Guide" : "查看指引" }
+    
+    // MARK: - 软件更新文案 (Software Update)
+    public var softwareUpdateSection: String { isEnglish ? "1. Software Update & Version" : "1. 软件更新与版本" }
+    public var viewCurrentVersionNotesBtn: String { isEnglish ? "What's New" : "本版更新亮点" }
+    public var currentVersionLabel: String { isEnglish ? "Current Version:" : "当前版本:" }
+    public var checkForUpdatesBtn: String { isEnglish ? "Check for Updates" : "检查更新" }
+    public var checkingForUpdates: String { isEnglish ? "Checking for updates..." : "正在检查更新..." }
+    public var alreadyLatestVersion: String { isEnglish ? "✅ You are up to date!" : "✅ 当前已是最新版本！" }
+    public func newVersionAvailable(_ version: String) -> String {
+        isEnglish ? "🎉 New version \(version) available!" : "🎉 发现新版本 \(version)！"
+    }
+    public var downloadUpdateBtn: String { isEnglish ? "View & Download on GitHub" : "前往 GitHub 查看并下载" }
+    public var updateCheckFailed: String { isEnglish ? "Failed to connect to GitHub. Please check network/proxy." : "无法连接至 GitHub，请检查网络或代理后重试。" }
+    public var oneClickUpdateBtn: String { isEnglish ? "🚀 Update & Restart" : "🚀 一键自动更新并重启" }
+    public var manualDownloadLink: String { isEnglish ? "Manual Download (GitHub)" : "手动在浏览器下载" }
+    public var downloadingUpdate: String { isEnglish ? "Downloading update..." : "正在下载更新包..." }
+    public var installingAndRestarting: String { isEnglish ? "Installing & Restarting..." : "下载完成，正在自动安装并重启..." }
+    public var downloadFailed: String { isEnglish ? "Download failed. Please check network or download manually." : "下载失败，请检查网络或点击手动下载通道。" }
+    public var currentVersionNotesTitle: String { isEnglish ? "✨ What's New in This Version (v1.2.2)" : "✨ 本版本核心更新内容 (v1.2.2)" }
+    public var currentVersionHighlights: [String] {
+        if isEnglish {
+            return [
+                "🛡️ Single App Icon Guarantee: Stealth build packaging into .build/ prevents duplicate icons in Launchpad",
+                "📋 Reorganized Flow: Updates on top, cohesive Google account settings in middle, language below",
+                "✨ On-Demand Version Card: Compact collapsible card with zero default footprint, unfolds on click",
+                "🌐 Dedicated Language Row: Full-width segmented picker eliminating text truncation for English",
+                "🎨 Clean & Unified UI: Removed duplicate internal headers and icons for consistent, clean typography"
+            ]
+        } else {
+            return [
+                "🛡️ 启动台双图标根治：引入 .build/ 隐身打包与自动消重守门员，启动台永远唯一单图标",
+                "📋 偏好设置层级理顺：更新置顶，Google 账号服务流紧凑居中，语言设置下移",
+                "✨ 更新亮点按需折叠：默认零垂直空间占用，轻量胶囊按钮点击原地展开与收起",
+                "🌐 界面语言独立通栏：分段器独立另起一行并自适应通栏，彻底消除 English 截断切边",
+                "🎨 视觉去噪去重：移除窗口内重复大标题与杂乱小图标，全篇统一纯文字标题规范"
+            ]
+        }
+    }
 }
